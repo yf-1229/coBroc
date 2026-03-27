@@ -31,7 +31,7 @@ namespace {
     // general
     constexpr uint8_t MAX_MOVES = 12;
     constexpr uint8_t MAX_HISTORY = 32;
-    constexpr uint8_t MAX_LOOP = 9;
+    constexpr uint8_t MAX_FOR_REPEAT = 9;
     constexpr uint8_t MAX_FOR_DEPTH = 4;
     // block list
     constexpr uint8_t LIST_VISIBLE = 8;
@@ -90,7 +90,7 @@ namespace {
         uint8_t history_size = 0;
         uint8_t move_count = 0;
         uint8_t selected_block_idx = 1;
-        uint8_t selected_loop = 1;
+        uint8_t selected_repeat = 1;
         uint8_t selected_color = 0;
         uint8_t if_edit_threshold = 0;
         uint8_t syntax_depth = 0;
@@ -181,7 +181,7 @@ namespace {
         if (hardware::keyPressed(keyUp)) {
             // TODO: select block
             sleep_ms(120);
-            return true;
+            return true; // update screen
         }
         if (hardware::keyPressed(keyDown)) {
 
@@ -189,7 +189,15 @@ namespace {
             return true;
         }
         if (hardware::keyPressed(keyLeft)) {
-            s.selected_loop = static_cast<uint8_t>((s.selected_var_id + COLOR_SLOTS - 1) % COLOR_SLOTS);
+            const auto t = static_cast<BlockType>(s.selected_block_idx);
+            if (t == BlockType::Move || t == BlockType::If) {
+                s.selected_color %= MAX_COLORS;
+            } else if (t == BlockType::For) {
+                s.selected_repeat = static_cast<uint8_t>((s.selected_repeat % MAX_FOR_REPEAT) + 1);
+            }
+
+
+            s.selected_repeat = static_cast<uint8_t>((s.selected_var_id + COLOR_SLOTS - 1) % COLOR_SLOTS);
             std::snprintf(s.status_line, sizeof(s.status_line), "Select var:v%u", s.selected_var_id);
             sleep_ms(120);
             return true;
@@ -211,19 +219,18 @@ namespace {
             return true;
         }
         if (hardware::keyPressed(keyA)) {
-            const BlockType t = static_cast<BlockType>(s.selected_block_idx);
-            uint8_t param = s.selected_color;
-            uint8_t var_id = s.selected_var_id;
-            if (t == BlockType::Move) {
-                param %= 4;
-                var_id = 0;
-            } else if (t == BlockType::For) {
-                param = static_cast<uint8_t>((param % MAX_FOR_REPEAT) + 1);
-                var_id = 0;
-            } else if (t == BlockType::End) {
-                param = 0;
-                var_id = 0;
-            }
+            const auto t = static_cast<BlockType>(s.selected_block_idx);
+            // uint8_t param = s.selected_color;
+            // if (t == BlockType::Move) {
+            //     param %= 4;
+            //     var_id = 0;
+            // } else if (t == BlockType::For) {
+            //     param = static_cast<uint8_t>((param % MAX_FOR_REPEAT) + 1);
+            //     var_id = 0;
+            // } else if (t == BlockType::End) {
+            //     param = 0;
+            //     var_id = 0;
+            // }
 
             if (addStepToProgram(s, t, param, var_id, false)) {
                 s.turn = TurnState::AITurn;
