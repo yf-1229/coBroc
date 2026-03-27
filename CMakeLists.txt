@@ -25,7 +25,9 @@ include_directories(./external/Infrared)
 
 # generate executable file
 add_executable(codeS
+        main.h
         main.cpp
+
 )
 
 # enable usb output, disable uart output
