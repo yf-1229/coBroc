@@ -39,18 +39,17 @@ namespace {
     constexpr uint16_t LIST_START_X = 8;
     constexpr uint16_t LIST_ROW_H = 20;
     constexpr uint16_t INDENT_STEP = 16;
-    // var
+    // color
     constexpr uint8_t COLOR_SLOTS = 6;
-    constexpr uint8_t MAX_COLORS = 9;
+    constexpr uint8_t MAX_COLORS = 8;
 
     enum class BlockType : uint8_t {
         None = 0,
         Move = 1,
         Draw = 2,
-        Val = 3,
-        If = 4,
-        For = 5,
-        End = 6
+        If = 3,
+        For = 4,
+        End = 5
     };
 
     enum class Colors : uint8_t {
@@ -73,8 +72,7 @@ namespace {
 
     struct ProgramStep {
         BlockType type = BlockType::None;
-        uint8_t param = 0;
-        uint8_t val_id = 0; // TODO: change to color
+        uint8_t param = 0; // Move-> move length, Draw-> Color, For-> repeat times
         bool from_ai = false;
     };
 
@@ -89,11 +87,12 @@ namespace {
 
         uint8_t history_size = 0;
         uint8_t move_count = 0;
+        uint8_t selected_line = 0;
+        uint8_t scroll_top = 0;
         uint8_t selected_block_idx = 1;
-        uint8_t selected_repeat = 1;
-        uint8_t selected_color = 0;
+        uint8_t selected_param = 0;
         uint8_t if_edit_threshold = 0;
-        uint8_t syntax_depth = 0;
+        uint8_t syntax_depth = 0; // 現在開いている IF/FOR のネスト数
 
         TurnState turn = TurnState::PlayerTurn;
         bool compiled_ok = false;
@@ -115,8 +114,8 @@ namespace {
         std::strncpy(s.status_line, "A:add B:val Y:type L/R:var X:run", sizeof(s.status_line) - 1);
     }
 
-    bool isPlayableBlock(BlockType t) { // TODO: add rule
-        return t == BlockType::Move || t == BlockType::Draw || t == BlockType::Val || t == BlockType::If || t == BlockType::For || t == BlockType::End;
+    bool isPlayableBlock(const BlockType t) { // TODO: add rule
+        return t == BlockType::Move || t == BlockType::Draw || t == BlockType::If || t == BlockType::For || t == BlockType::End;
     }
 
     bool blockAllowedByDepth(const ProgramState& s, BlockType t) {
@@ -142,6 +141,17 @@ namespace {
         s.block_frequency[idx]++;
     }
 
+    void ensureSelectionVisible(ProgramState& s) {
+        if (s.selected_line < s.scroll_top) {
+            s.scroll_top = s.selected_line;
+            return;
+        }
+        const uint8_t bottom = static_cast<uint8_t>(s.scroll_top + LIST_VISIBLE - 1);
+        if (s.selected_line > bottom) {
+            s.scroll_top = static_cast<uint8_t>(s.selected_line - (LIST_VISIBLE - 1));
+        }
+    }
+
     void recalcViewDepths(ProgramState& s) {
         uint8_t depth = 0;
         for (uint8_t i = 0; i < s.move_count; i++) {
@@ -160,8 +170,96 @@ namespace {
         }
     }
 
+    bool addStepToProgram(ProgramState& s, BlockType type, const uint8_t param, const bool from_ai) {
+        if (s.move_count >= MAX_MOVES) {
+            std::strncpy(s.status_line, "Move limit reached", sizeof(s.status_line) - 1);
+            return false;
+        }
+        if (!isPlayableBlock(type) || !blockAllowedByDepth(s, type)) {
+            std::strncpy(s.status_line, "Block not allowed now", sizeof(s.status_line) - 1);
+            return false;
+        }
+
+        s.program[s.move_count] = {type, param,  from_ai};
+        s.move_count++;
+
+        if (type == BlockType::If || type == BlockType::For) {
+            s.syntax_depth++;
+        } else if (type == BlockType::End && s.syntax_depth > 0) {
+            s.syntax_depth--;
+        }
+
+        if (!from_ai) {
+            rememberHistory(s, type);
+        }
+
+        recalcViewDepths(s);
+        std::snprintf(
+            s.status_line,
+            sizeof(s.status_line),
+            "%s add %s -> %u",
+            from_ai ? "AI" : "You",
+            kBlockNames[static_cast<uint8_t>(type)],
+            param
+        );
+        return true;
+    }
 
 
+    // --- TODO: AI will come in these lines ---
+
+
+    void drawProgramList(const ProgramState& s) {
+        Paint_DrawString_EN(4, 4, "Program (List + Indent)", &Font16, BLACK, WHITE);
+        Paint_DrawString_EN(4, 20, s.status_line, &Font12, BLACK, WHITE);
+
+        for (uint8_t row = 0; row < LIST_VISIBLE; row++) {
+            const uint8_t idx = static_cast<uint8_t>(s.scroll_top + row);
+            const uint16_t y = static_cast<uint16_t>(LIST_TOP_Y + row * LIST_ROW_H);
+            if (idx >= MAX_MOVES) {
+                break;
+            }
+
+            const bool is_selected = (idx == s.selected_line);
+            Paint_DrawRectangle(2, y - 2, 238, y + 16, is_selected ? GREEN : GRAY, DOT_PIXEL_1X1, DRAW_FILL_EMPTY);
+
+            if (idx >= s.move_count) {
+                char empty_line[32];
+                std::snprintf(empty_line, sizeof(empty_line), "%02u: [empty]", idx + 1);
+                Paint_DrawString_EN(8, y, empty_line, &Font12, BLACK, WHITE);
+                continue;
+            }
+
+            const auto& step = s.program[idx];
+            const uint16_t indent_x = static_cast<uint16_t>(LIST_START_X + s.view_depths[idx] * INDENT_STEP);
+            char line[72];
+            if (step.type == BlockType::If) {
+                std::snprintf(line, sizeof(line), "%02u:IF v%u>=%u%s", idx + 1, step.param, step.from_ai ? " [AI]" : "P");
+            } else if (step.type == BlockType::For) {
+                std::snprintf(line, sizeof(line), "%02u:FOR(%u)%s", idx + 1, step.param, step.from_ai ? " [AI]" : "");
+            } else {
+                std::snprintf(line, sizeof(line), "%02u:%s(%u)%s", idx + 1, kBlockNames[static_cast<uint8_t>(step.type)], step.param, step.from_ai ? " [AI]" : "");
+            }
+            Paint_DrawString_EN(indent_x, y, line, &Font12, BLACK, WHITE);
+        }
+    }
+
+    void drawHUD(const ProgramState& s) {
+        char line[64];
+        std::snprintf(line, sizeof(line), "Turn:%s Mv:%u/%u Type:%s",
+                      s.turn == TurnState::PlayerTurn ? "You" :
+                      s.turn == TurnState::AITurn ? "AI" :
+                      s.turn == TurnState::RunProgram ? "RUN" : "END",
+                      s.move_count, MAX_MOVES,
+                      kBlockNames[s.selected_block_idx]);
+        Paint_DrawString_EN(4, 232, line, &Font12, BLACK, WHITE);
+    }
+
+    void drawMainScene(const ProgramState& s) {
+        Paint_Clear(WHITE);
+        drawProgramList(s);
+        drawHUD(s);
+    }
 
     void cycleBlockType(ProgramState& s) {
         s.selected_block_idx++;
@@ -172,39 +270,49 @@ namespace {
     }
 
     void cycleColor(ProgramState& s) { // TODO: change to color
-        s.selected_color = static_cast<uint8_t>((s.selected_color + 1) % (MAX_COLORS + 1)); // 0..MAX_COLORS
-        std::snprintf(s.status_line, sizeof(s.status_line), "Select val:%u", s.selected_color);
+        s.selected_param = static_cast<uint8_t>((s.selected_param + 1) % (MAX_COLORS + 1)); // 0..MAX_COLORS
+        std::snprintf(s.status_line, sizeof(s.status_line), "Select val:%u", s.selected_param);
     }
 
 // --------------------------------------------
     bool handlePlayerInput(ProgramState& s) {
         if (hardware::keyPressed(keyUp)) {
-            // TODO: select block
+            if (s.selected_line > 0) {
+                s.selected_line--;
+                ensureSelectionVisible(s);
+            }
             sleep_ms(120);
             return true; // update screen
         }
         if (hardware::keyPressed(keyDown)) {
-
+            if (s.selected_line + 1 < MAX_MOVES) {
+                s.selected_line++;
+                ensureSelectionVisible(s);
+            }
             sleep_ms(120);
             return true;
         }
         if (hardware::keyPressed(keyLeft)) {
             const auto t = static_cast<BlockType>(s.selected_block_idx);
             if (t == BlockType::Move || t == BlockType::If) {
-                s.selected_color %= MAX_COLORS;
+                s.selected_param = static_cast<uint8_t>((s.selected_param + COLOR_SLOTS - 1) % COLOR_SLOTS);
+                std::snprintf(s.status_line, sizeof(s.status_line), "Select color:%u", s.selected_param);
             } else if (t == BlockType::For) {
-                s.selected_repeat = static_cast<uint8_t>((s.selected_repeat % MAX_FOR_REPEAT) + 1);
+                s.selected_param = static_cast<uint8_t>((s.selected_param + MAX_FOR_REPEAT - 1) % MAX_FOR_REPEAT);
+                std::snprintf(s.status_line, sizeof(s.status_line), "Select repeat:%u", s.selected_param++);
             }
-
-
-            s.selected_repeat = static_cast<uint8_t>((s.selected_var_id + COLOR_SLOTS - 1) % COLOR_SLOTS);
-            std::snprintf(s.status_line, sizeof(s.status_line), "Select var:v%u", s.selected_var_id);
             sleep_ms(120);
             return true;
         }
         if (hardware::keyPressed(keyRight)) {
-            s.selected_var_id = static_cast<uint8_t>((s.selected_var_id + 1) % COLOR_SLOTS);
-            std::snprintf(s.status_line, sizeof(s.status_line), "Select var:v%u", s.selected_var_id);
+            const auto t = static_cast<BlockType>(s.selected_block_idx);
+            if (t == BlockType::Move || t == BlockType::If) {
+                s.selected_param = static_cast<uint8_t>((s.selected_param + 1) % COLOR_SLOTS);
+                std::snprintf(s.status_line, sizeof(s.status_line), "Select color:%u", s.selected_param);
+            } else if (t == BlockType::For) {
+                s.selected_param = static_cast<uint8_t>((s.selected_param + 1) % MAX_FOR_REPEAT);
+                std::snprintf(s.status_line, sizeof(s.status_line), "Select repeat:%u", s.selected_param++);
+            }
             sleep_ms(120);
             return true;
         }
@@ -220,19 +328,9 @@ namespace {
         }
         if (hardware::keyPressed(keyA)) {
             const auto t = static_cast<BlockType>(s.selected_block_idx);
-            // uint8_t param = s.selected_color;
-            // if (t == BlockType::Move) {
-            //     param %= 4;
-            //     var_id = 0;
-            // } else if (t == BlockType::For) {
-            //     param = static_cast<uint8_t>((param % MAX_FOR_REPEAT) + 1);
-            //     var_id = 0;
-            // } else if (t == BlockType::End) {
-            //     param = 0;
-            //     var_id = 0;
-            // }
+            uint8_t param = s.selected_param;
 
-            if (addStepToProgram(s, t, param, var_id, false)) {
+            if (addStepToProgram(s, t, param, false)) {
                 s.turn = TurnState::AITurn;
             }
             sleep_ms(160);
@@ -249,7 +347,7 @@ namespace {
 
 
 
-}
+
 
 
 int LCD() {
@@ -302,7 +400,7 @@ int LCD() {
         }
 
         if (state.turn == TurnState::AITurn) {
-            performAITurn(state);
+            // performAITurn(state);
             drawMainScene(state);
             LCD_1IN3_Display(black_image);
             needs_redraw = false;
@@ -311,13 +409,13 @@ int LCD() {
         }
 
         if (state.turn == TurnState::RunProgram) {
-            compileAndRun(state);
+            // compileAndRun(state);
             state.turn = TurnState::Finished;
             needs_redraw = true;
         }
 
         if (needs_redraw) {
-            drawExecutionResult(state);
+            // drawExecutionResult(state);
             LCD_1IN3_Display(black_image);
             needs_redraw = false;
         }

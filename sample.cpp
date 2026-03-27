@@ -492,21 +492,14 @@ void drawProgramList(const ProgramState& s) {
 void drawHUD(const ProgramState& s) {
     char line[64];
     std::snprintf(line, sizeof(line), "Turn:%s Mv:%u/%u Type:%s",
-                  s.turn == TurnState::PlayerTurn ? "P" :
+                  s.turn == TurnState::PlayerTurn ? "You" :
                   s.turn == TurnState::AITurn ? "AI" :
                   s.turn == TurnState::RunProgram ? "RUN" : "END",
                   s.move_count, MAX_MOVES,
                   kBlockNames[s.selected_block_idx]);
     Paint_DrawString_EN(4, 202, line, &Font12, BLACK, WHITE);
 
-    std::snprintf(line, sizeof(line), "Val:%u SelVar:v%u  Vars:%u/%u/%u/%u",
-                  s.selected_param,
-                  s.selected_var_id,
-                  s.live_vars[0],
-                  s.live_vars[1],
-                  s.live_vars[2],
-                  s.live_vars[3]);
-    Paint_DrawString_EN(4, 218, line, &Font12, BLACK, WHITE);
+
 
     std::snprintf(line, sizeof(line), "Depth:%u  keys:A add B val Y type", s.syntax_depth);
     Paint_DrawString_EN(4, 232, line, &Font12, BLACK, WHITE);
