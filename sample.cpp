@@ -91,7 +91,7 @@ const std::array<const char*, 8> kBlockNames = {
     "RESV"
 };
 
-inline bool keyPressed(uint8_t key) {
+bool keyPressed(uint8_t key) {
     return DEV_Digital_Read(key) == 0;
 }
 

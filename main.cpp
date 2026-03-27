@@ -1,7 +1,6 @@
 #include "main.h"
 
 extern "C" {
-#include "Debug.h"
 #include "Infrared.h"
 #include "LCD_1in3.h"
 #include "DEV_Config.h"
@@ -36,12 +35,13 @@ namespace {
     // block list
     constexpr uint8_t LIST_VISIBLE = 8;
     constexpr uint16_t LIST_TOP_Y = 36;
-    constexpr uint16_t LIST_START_X = 8;
+    constexpr uint16_t LIST_START_X = 40;
     constexpr uint16_t LIST_ROW_H = 20;
     constexpr uint16_t INDENT_STEP = 16;
     // color
     constexpr uint8_t COLOR_SLOTS = 6;
     constexpr uint8_t MAX_COLORS = 8;
+    constexpr uint8_t COLOR_COUNT = 8;
 
     enum class BlockType : uint8_t {
         None = 0,
@@ -52,23 +52,26 @@ namespace {
         End = 5
     };
 
-    enum class Colors : uint8_t {
-        White = 0,
-        Red = 1,
-        Orange = 2,
-        Yellow = 3,
-        Green = 4,
-        Blue = 5,
-        Purple = 6,
-        Black = 7,
-    };
-
     enum class TurnState : uint8_t {
         PlayerTurn = 0,
         AITurn = 1,
         RunProgram = 2,
         Finished = 3
     };
+
+    // GUI_Paint.h の色defineを「番号付きリスト」で扱う                                                                                                                                                               │
+    constexpr std::array<UWORD, COLOR_COUNT> kPaintColors = {
+        WHITE, RED, BRRED, YELLOW, GREEN, BLUE, MAGENTA, BLACK
+    };
+
+    constexpr uint8_t colorIndex(const uint8_t idx) {
+        return static_cast<uint8_t>(idx % COLOR_COUNT);
+    }
+
+    constexpr UWORD paintColorByIndex(const uint8_t idx) {
+        return kPaintColors[colorIndex(idx)];
+    }
+
 
     struct ProgramStep {
         BlockType type = BlockType::None;
@@ -82,8 +85,6 @@ namespace {
         std::array<uint8_t, 8> block_frequency{};
         std::array<std::array<uint16_t, 8>, 8> transitions{};
         std::array<uint8_t, MAX_MOVES> view_depths{};
-        std::array<uint8_t, COLOR_SLOTS> live_colors{};
-        std::array<uint8_t, COLOR_SLOTS> exec_colors{};
 
         uint8_t history_size = 0;
         uint8_t move_count = 0;
@@ -91,7 +92,6 @@ namespace {
         uint8_t scroll_top = 0;
         uint8_t selected_block_idx = 1;
         uint8_t selected_param = 0;
-        uint8_t if_edit_threshold = 0;
         uint8_t syntax_depth = 0; // 現在開いている IF/FOR のネスト数
 
         TurnState turn = TurnState::PlayerTurn;
@@ -99,11 +99,10 @@ namespace {
         char status_line[64]{};
     };
 
-    constexpr std::array<const char*, 8> kBlockNames = {
+    constexpr std::array<const char*, 6> kBlockNames = {
         "NONE",
         "MOVE",
         "DRAW",
-        "VAL",
         "IF",
         "FOR",
         "END",
@@ -114,11 +113,11 @@ namespace {
         std::strncpy(s.status_line, "A:add B:val Y:type L/R:var X:run", sizeof(s.status_line) - 1);
     }
 
-    bool isPlayableBlock(const BlockType t) { // TODO: add rule
+    bool isPlayableBlock(const BlockType t) {
         return t == BlockType::Move || t == BlockType::Draw || t == BlockType::If || t == BlockType::For || t == BlockType::End;
     }
 
-    bool blockAllowedByDepth(const ProgramState& s, BlockType t) {
+    bool blockAllowedByDepth(const ProgramState& s, const BlockType t) {
         if (t == BlockType::End) {
             return s.syntax_depth > 0;
         }
@@ -146,7 +145,7 @@ namespace {
             s.scroll_top = s.selected_line;
             return;
         }
-        const uint8_t bottom = static_cast<uint8_t>(s.scroll_top + LIST_VISIBLE - 1);
+        const auto bottom = static_cast<uint8_t>(s.scroll_top + LIST_VISIBLE - 1);
         if (s.selected_line > bottom) {
             s.scroll_top = static_cast<uint8_t>(s.selected_line - (LIST_VISIBLE - 1));
         }
@@ -194,14 +193,24 @@ namespace {
         }
 
         recalcViewDepths(s);
-        std::snprintf(
+        if (type == BlockType::If || type == BlockType::Draw) {
+            std::snprintf(
             s.status_line,
             sizeof(s.status_line),
             "%s add %s -> %u",
             from_ai ? "AI" : "You",
             kBlockNames[static_cast<uint8_t>(type)],
-            param
-        );
+            param);
+        } else {
+            std::snprintf(
+            s.status_line,
+            sizeof(s.status_line),
+            "%s add %s -> %u",
+            from_ai ? "AI" : "You",
+            kBlockNames[static_cast<uint8_t>(type)],
+            param);
+        }
+
         return true;
     }
 
@@ -210,18 +219,18 @@ namespace {
 
 
     void drawProgramList(const ProgramState& s) {
-        Paint_DrawString_EN(4, 4, "Program (List + Indent)", &Font16, BLACK, WHITE);
+        Paint_DrawString_EN(4, 4, "Blockode", &Font16, BLACK, WHITE);
         Paint_DrawString_EN(4, 20, s.status_line, &Font12, BLACK, WHITE);
 
         for (uint8_t row = 0; row < LIST_VISIBLE; row++) {
-            const uint8_t idx = static_cast<uint8_t>(s.scroll_top + row);
-            const uint16_t y = static_cast<uint16_t>(LIST_TOP_Y + row * LIST_ROW_H);
+            const auto idx = static_cast<uint8_t>(s.scroll_top + row);
+            const auto y = static_cast<uint16_t>(LIST_TOP_Y + row * LIST_ROW_H);
             if (idx >= MAX_MOVES) {
-                break;
+                break; // Finish coding
             }
 
             const bool is_selected = (idx == s.selected_line);
-            Paint_DrawRectangle(2, y - 2, 238, y + 16, is_selected ? GREEN : GRAY, DOT_PIXEL_1X1, DRAW_FILL_EMPTY);
+            Paint_DrawRectangle(40, y - 2, 200, y + 16, is_selected ? GREEN : GRAY, DOT_PIXEL_1X1, DRAW_FILL_EMPTY);
 
             if (idx >= s.move_count) {
                 char empty_line[32];
@@ -230,17 +239,20 @@ namespace {
                 continue;
             }
 
-            const auto& step = s.program[idx];
-            const uint16_t indent_x = static_cast<uint16_t>(LIST_START_X + s.view_depths[idx] * INDENT_STEP);
             char line[72];
+            const auto& step = s.program[idx];
+            const auto indent_x = static_cast<uint16_t>(LIST_START_X + s.view_depths[idx] * INDENT_STEP);
+
             if (step.type == BlockType::If) {
-                std::snprintf(line, sizeof(line), "%02u:IF v%u>=%u%s", idx + 1, step.param, step.from_ai ? " [AI]" : "P");
+                std::snprintf(line, sizeof(line), "%02u:IF v%u>=%s", idx + 1, step.param, step.from_ai ? " [AI]" : "");
             } else if (step.type == BlockType::For) {
                 std::snprintf(line, sizeof(line), "%02u:FOR(%u)%s", idx + 1, step.param, step.from_ai ? " [AI]" : "");
+            } else if (step.type == BlockType::Draw) {
+                std::snprintf(line, sizeof(line), "%02u:%s(%u)%s", idx + 1, kBlockNames[static_cast<uint8_t>(step.type)], step.param, step.from_ai ? " [AI]" : "");
             } else {
                 std::snprintf(line, sizeof(line), "%02u:%s(%u)%s", idx + 1, kBlockNames[static_cast<uint8_t>(step.type)], step.param, step.from_ai ? " [AI]" : "");
             }
-            Paint_DrawString_EN(indent_x, y, line, &Font12, BLACK, WHITE);
+            Paint_DrawString_EN(indent_x, y, line, &Font12, BLACK, paintColorByIndex(s.selected_param));
         }
     }
 
@@ -271,7 +283,6 @@ namespace {
 
     void cycleColor(ProgramState& s) { // TODO: change to color
         s.selected_param = static_cast<uint8_t>((s.selected_param + 1) % (MAX_COLORS + 1)); // 0..MAX_COLORS
-        std::snprintf(s.status_line, sizeof(s.status_line), "Select val:%u", s.selected_param);
     }
 
 // --------------------------------------------
