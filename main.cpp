@@ -31,7 +31,7 @@ namespace {
     // general
     constexpr uint8_t MAX_MOVES = 12;
     constexpr uint8_t MAX_HISTORY = 32;
-    constexpr uint8_t MAX_VARIABLES = 9;
+    constexpr uint8_t MAX_LOOP = 9;
     constexpr uint8_t MAX_FOR_DEPTH = 4;
     // block list
     constexpr uint8_t LIST_VISIBLE = 8;
@@ -40,7 +40,8 @@ namespace {
     constexpr uint16_t LIST_ROW_H = 20;
     constexpr uint16_t INDENT_STEP = 16;
     // var
-    constexpr uint8_t VAR_SLOTS = 4; // TODO
+    constexpr uint8_t COLOR_SLOTS = 6;
+    constexpr uint8_t MAX_COLORS = 9;
 
     enum class BlockType : uint8_t {
         None = 0,
@@ -50,6 +51,17 @@ namespace {
         If = 4,
         For = 5,
         End = 6
+    };
+
+    enum class Colors : uint8_t {
+        White = 0,
+        Red = 1,
+        Orange = 2,
+        Yellow = 3,
+        Green = 4,
+        Blue = 5,
+        Purple = 6,
+        Black = 7,
     };
 
     enum class TurnState : uint8_t {
@@ -72,17 +84,14 @@ namespace {
         std::array<uint8_t, 8> block_frequency{};
         std::array<std::array<uint16_t, 8>, 8> transitions{};
         std::array<uint8_t, MAX_MOVES> view_depths{};
-        std::array<uint8_t, VAR_SLOTS> live_vars{};
-        std::array<uint8_t, VAR_SLOTS> exec_vars{};
+        std::array<uint8_t, COLOR_SLOTS> live_colors{};
+        std::array<uint8_t, COLOR_SLOTS> exec_colors{};
 
         uint8_t history_size = 0;
         uint8_t move_count = 0;
-        uint8_t selected_line = 0;
-        uint8_t scroll_top = 0;
         uint8_t selected_block_idx = 1;
-        uint8_t selected_param = 1;
-        uint8_t selected_var_id = 0;
-        uint8_t if_edit_var_id = 0;
+        uint8_t selected_loop = 1;
+        uint8_t selected_color = 0;
         uint8_t if_edit_threshold = 0;
         uint8_t syntax_depth = 0;
 
@@ -91,7 +100,7 @@ namespace {
         char status_line[64]{};
     };
 
-    const std::array<const char*, 8> kBlockNames = {
+    constexpr std::array<const char*, 8> kBlockNames = {
         "NONE",
         "MOVE",
         "DRAW",
@@ -119,6 +128,54 @@ namespace {
         }
         return true;
     }
+
+    void rememberHistory(ProgramState& s, BlockType block) {
+        const auto idx = static_cast<uint8_t>(block);
+        if (s.history_size > 0) {
+            const uint8_t prev = s.player_history[(s.history_size - 1) % MAX_HISTORY];
+            s.transitions[prev][idx]++;
+        }
+        s.player_history[s.history_size % MAX_HISTORY] = idx;
+        if (s.history_size < MAX_HISTORY) {
+            s.history_size++;
+        }
+        s.block_frequency[idx]++;
+    }
+
+    void recalcViewDepths(ProgramState& s) {
+        uint8_t depth = 0;
+        for (uint8_t i = 0; i < s.move_count; i++) {
+            const BlockType t = s.program[i].type;
+            if (t == BlockType::End) {
+                if (depth > 0) {
+                    depth--;
+                }
+                s.view_depths[i] = depth;
+                continue;
+            }
+            s.view_depths[i] = depth;
+            if (t == BlockType::If || t == BlockType::For) {
+                depth = static_cast<uint8_t>(std::min<uint8_t>(MAX_FOR_DEPTH, depth + 1));
+            }
+        }
+    }
+
+
+
+
+    void cycleBlockType(ProgramState& s) {
+        s.selected_block_idx++;
+        if (s.selected_block_idx > static_cast<uint8_t>(BlockType::End)) {
+            s.selected_block_idx = static_cast<uint8_t>(BlockType::Move);
+        }
+        std::snprintf(s.status_line, sizeof(s.status_line), "Select type:%s", kBlockNames[s.selected_block_idx]);
+    }
+
+    void cycleColor(ProgramState& s) { // TODO: change to color
+        s.selected_color = static_cast<uint8_t>((s.selected_color + 1) % (MAX_COLORS + 1)); // 0..MAX_COLORS
+        std::snprintf(s.status_line, sizeof(s.status_line), "Select val:%u", s.selected_color);
+    }
+
 // --------------------------------------------
     bool handlePlayerInput(ProgramState& s) {
         if (hardware::keyPressed(keyUp)) {
@@ -132,13 +189,13 @@ namespace {
             return true;
         }
         if (hardware::keyPressed(keyLeft)) {
-            s.selected_var_id = static_cast<uint8_t>((s.selected_var_id + VAR_SLOTS - 1) % VAR_SLOTS);
+            s.selected_loop = static_cast<uint8_t>((s.selected_var_id + COLOR_SLOTS - 1) % COLOR_SLOTS);
             std::snprintf(s.status_line, sizeof(s.status_line), "Select var:v%u", s.selected_var_id);
             sleep_ms(120);
             return true;
         }
         if (hardware::keyPressed(keyRight)) {
-            s.selected_var_id = static_cast<uint8_t>((s.selected_var_id + 1) % VAR_SLOTS);
+            s.selected_var_id = static_cast<uint8_t>((s.selected_var_id + 1) % COLOR_SLOTS);
             std::snprintf(s.status_line, sizeof(s.status_line), "Select var:v%u", s.selected_var_id);
             sleep_ms(120);
             return true;
@@ -149,13 +206,13 @@ namespace {
             return true;
         }
         if (hardware::keyPressed(keyB)) {
-            cycleParam(s);
+            cycleColor(s);
             sleep_ms(140);
             return true;
         }
         if (hardware::keyPressed(keyA)) {
             const BlockType t = static_cast<BlockType>(s.selected_block_idx);
-            uint8_t param = s.selected_param;
+            uint8_t param = s.selected_color;
             uint8_t var_id = s.selected_var_id;
             if (t == BlockType::Move) {
                 param %= 4;
