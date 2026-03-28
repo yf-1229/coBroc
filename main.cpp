@@ -28,7 +28,7 @@ namespace hardware {
 
 namespace {
     // general
-    constexpr uint8_t MAX_MOVES = 12;
+    constexpr uint8_t MAX_MOVES = 16;
     constexpr uint8_t MAX_HISTORY = 32;
     constexpr uint8_t MAX_REPEAT = 9;
     constexpr uint8_t MAX_REPEAT_DEPTH = 4;
@@ -38,9 +38,8 @@ namespace {
     constexpr uint16_t LIST_START_X = 40;
     constexpr uint16_t LIST_ROW_H = 20;
     constexpr uint16_t INDENT_STEP = 16;
-    // color
     constexpr uint8_t COLOR_SLOTS = 6;
-    constexpr uint8_t MAX_COLORS = 8;
+    constexpr uint8_t MAX_PARAM = 7; // 0..7
     constexpr uint8_t COLOR_COUNT = 8;
 
     enum class BlockType : uint8_t {
@@ -282,7 +281,7 @@ namespace {
     }
 
     void cycleColor(ProgramState& s) { // TODO: change to color
-        s.selected_param = static_cast<uint8_t>((s.selected_param + 1) % (MAX_COLORS + 1)); // 0..MAX_COLORS
+        s.selected_param = static_cast<uint8_t>((s.selected_param + 1) % (MAX_PARAM + 1)); // 0..MAX_COLORS
     }
 
 // --------------------------------------------
