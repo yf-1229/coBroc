@@ -60,9 +60,6 @@ namespace {
                                           (COLOR_PARAM_MAX - COLOR_PARAM_MIN + 1) * 2 +
                                           MAX_REPEAT + 1;
 
-    constexpr bool ENABLE_AI_LOG = true;
-    constexpr const char* AI_LOG_PATH = "/tmp/maincpp_ai_regression.csv";
-
     enum class BlockType : uint8_t {
         None = 0,
         Move = 1,
@@ -224,69 +221,6 @@ namespace {
     bool g_ydf_worker_running = false;
 
     void normalizeSelectedBlockType(ProgramState& s);
-
-    bool g_ai_log_header_written = false;
-
-    void writeAiLogHeader() {
-        if (!ENABLE_AI_LOG || g_ai_log_header_written) {
-            return;
-        }
-        FILE* fp = std::fopen(AI_LOG_PATH, "w");
-        if (fp == nullptr) {
-            return;
-        }
-        std::fprintf(
-            fp,
-            "query_id,game_id,turn,candidate_type,candidate_param,depth,remaining_moves,last_type,freq_move,freq_draw,freq_if,freq_repeat,freq_end,transition_prev_to_candidate,legal,actor,feedback_penalty,chosen,suitability_label\n"
-        );
-        std::fclose(fp);
-        g_ai_log_header_written = true;
-    }
-
-    void appendAiLogRow(
-        const ProgramState& s,
-        uint8_t turn_index,
-        const AICandidate& c,
-        uint8_t last_type,
-        uint16_t transition_prev_to_candidate,
-        ActorType actor,
-        bool chosen,
-        float suitability_label
-    ) {
-        if (!ENABLE_AI_LOG) {
-            return;
-        }
-        writeAiLogHeader();
-        FILE* fp = std::fopen(AI_LOG_PATH, "a");
-        if (fp == nullptr) {
-            return;
-        }
-        const uint32_t query_id = static_cast<uint32_t>(s.game_id) * 100u + turn_index;
-        std::fprintf(
-            fp,
-            "%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%.9f\n",
-            query_id,
-            s.game_id,
-            turn_index,
-            static_cast<uint8_t>(c.type),
-            c.param,
-            s.syntax_depth,
-            static_cast<uint8_t>(MAX_MOVES - s.move_count),
-            last_type,
-            s.block_frequency[static_cast<uint8_t>(BlockType::Move)],
-            s.block_frequency[static_cast<uint8_t>(BlockType::Draw)],
-            s.block_frequency[static_cast<uint8_t>(BlockType::If)],
-            s.block_frequency[static_cast<uint8_t>(BlockType::Repeat)],
-            s.block_frequency[static_cast<uint8_t>(BlockType::End)],
-            transition_prev_to_candidate,
-            c.legal ? 1 : 0,
-            static_cast<uint8_t>(actor),
-            c.feedback_penalty,
-            chosen ? 1 : 0,
-            static_cast<double>(suitability_label)
-        );
-        std::fclose(fp);
-    }
 
     void initProgramState(ProgramState& s) {
         const uint16_t next_game = static_cast<uint16_t>(s.game_id + 1);
@@ -542,21 +476,15 @@ namespace {
         return chosen != 255;
     }
 
-    bool findCandidateByAction(
-        const std::array<AICandidate, AI_CANDIDATE_SLOTS>& cands,
-        uint8_t count,
-        BlockType type,
-        uint8_t param,
-        uint8_t& out_index
-    ) {
-        out_index = 255;
-        for (uint8_t i = 0; i < count; i++) {
-            if (cands[i].type == type && cands[i].param == param) {
-                out_index = i;
-                return true;
+    uint8_t tailTypeStreak(const ProgramState& s, BlockType t) {
+        uint8_t streak = 0;
+        for (int i = static_cast<int>(s.move_count) - 1; i >= 0; --i) {
+            if (s.program[static_cast<size_t>(i)].type != t) {
+                break;
             }
+            streak++;
         }
-        return false;
+        return streak;
     }
 
     bool violatesAIMoveRule(const ProgramState& s, const AICandidate& c) {
@@ -585,6 +513,7 @@ namespace {
     }
 
     void applyRuleFeedbackAndRescore(ProgramState& s, std::array<AICandidate, AI_CANDIDATE_SLOTS>& cands, uint8_t count, ActorType actor) {
+        const uint8_t draw_streak = tailTypeStreak(s, BlockType::Draw);
         for (uint8_t i = 0; i < count; i++) {
             auto& c = cands[i];
             if (!c.legal) {
@@ -594,68 +523,40 @@ namespace {
                 c.feedback_penalty = static_cast<uint8_t>(std::min<uint16_t>(255, c.feedback_penalty + 1));
             }
             c.suitability = ydfPredictSuitability(s, c, actor);
+
+            if (c.type == BlockType::Draw) {
+                // Prevent a Draw-only loop unless Draw is structurally required.
+                c.suitability -= 0.12f * static_cast<float>(draw_streak);
+                if (s.move_count > 0 && s.program[s.move_count - 1].type == BlockType::Draw &&
+                    s.program[s.move_count - 1].param == c.param) {
+                    c.suitability -= 0.10f;
+                }
+            } else {
+                const uint8_t type_freq = s.block_frequency[static_cast<uint8_t>(c.type)];
+                if (type_freq == 0) {
+                    c.suitability += 0.08f;
+                } else if (type_freq == 1) {
+                    c.suitability += 0.04f;
+                }
+                if (c.type == BlockType::End && s.syntax_depth > 0) {
+                    c.suitability += 0.10f;
+                }
+            }
         }
     }
 
-    std::array<float, AI_CANDIDATE_SLOTS> buildSuitabilityLabels(
-        const std::array<AICandidate, AI_CANDIDATE_SLOTS>& cands,
-        uint8_t count
-    ) {
-        std::array<float, AI_CANDIDATE_SLOTS> labels{};
-        float sum = 0.0f;
-        for (uint8_t i = 0; i < count; i++) {
-            if (!cands[i].legal) {
-                labels[i] = 0.0f;
-                continue;
-            }
-            labels[i] = std::max(0.0f, cands[i].suitability);
-            sum += labels[i];
-        }
-        if (sum > 0.0f) {
-            for (uint8_t i = 0; i < count; i++) {
-                labels[i] /= sum;
-            }
-            return labels;
-        }
-        uint8_t legal_count = 0;
-        for (uint8_t i = 0; i < count; i++) {
-            if (cands[i].legal) {
-                legal_count++;
-            }
-        }
-        if (legal_count == 0) {
-            return labels;
-        }
-        const float uniform = 1.0f / static_cast<float>(legal_count);
-        for (uint8_t i = 0; i < count; i++) {
-            labels[i] = cands[i].legal ? uniform : 0.0f;
-        }
-        return labels;
-    }
-
-    void logCandidates(const ProgramState& s, const std::array<AICandidate, AI_CANDIDATE_SLOTS>& cands, uint8_t count, uint8_t chosen_index, ActorType actor) {
-        if (!ENABLE_AI_LOG) {
-            return;
-        }
-        const uint8_t last_type = s.history_size == 0 ? 0 : s.history[(s.history_size - 1) % MAX_HISTORY];
-        const uint8_t turn_index = static_cast<uint8_t>(s.move_count + 1);
-        const auto labels = buildSuitabilityLabels(cands, count);
-
+    bool chooseBestNonDrawCandidate(const std::array<AICandidate, AI_CANDIDATE_SLOTS>& cands, uint8_t count, uint8_t& chosen) {
+        chosen = 255;
         for (uint8_t i = 0; i < count; i++) {
             const auto& c = cands[i];
-            const auto features = makeYdfFeatures(s, c, actor);
-            const bool chosen = (i == chosen_index);
-            appendAiLogRow(
-                s,
-                turn_index,
-                c,
-                static_cast<uint8_t>(features.last_type),
-                static_cast<uint16_t>(features.transition_prev_to_candidate),
-                actor,
-                chosen,
-                labels[i]
-            );
+            if (!c.legal || c.type == BlockType::Draw) {
+                continue;
+            }
+            if (chosen == 255 || c.suitability > cands[chosen].suitability) {
+                chosen = i;
+            }
         }
+        return chosen != 255;
     }
 
     void performAITurn(ProgramState& s) {
@@ -675,7 +576,16 @@ namespace {
                 chosen = retry;
             }
         }
-        logCandidates(s, cands, count, chosen, ActorType::AI);
+        if (cands[chosen].type == BlockType::Draw) {
+            uint8_t non_draw = 255;
+            if (chooseBestNonDrawCandidate(cands, count, non_draw)) {
+                const uint8_t draw_streak = tailTypeStreak(s, BlockType::Draw);
+                const float gap = cands[chosen].suitability - cands[non_draw].suitability;
+                if (draw_streak >= 2 || gap <= 0.08f) {
+                    chosen = non_draw;
+                }
+            }
+        }
         if (!addStepToProgram(s, cands[chosen].type, cands[chosen].param, true)) {
             s.turn = TurnState::RunProgram;
             return;
@@ -1036,7 +946,7 @@ namespace {
             sleep_ms(140);
             return true;
         }
-            if (hardware::keyPressed(keyA)) {
+        if (hardware::keyPressed(keyA)) {
             const BlockType t = static_cast<BlockType>(s.selected_block_idx);
             uint8_t param = blockHasParam(t) ? s.selected_param : 0;
             if (blockHasParam(t)) {
@@ -1045,20 +955,6 @@ namespace {
                 if (param < min_param || param > max_param) {
                     param = min_param;
                 }
-            }
-            uint8_t count = 0;
-            auto cands = buildCandidates(s, count);
-            for (uint8_t i = 0; i < count; i++) {
-                if (!cands[i].legal) {
-                    continue;
-                }
-                cands[i].suitability = ydfPredictSuitability(s, cands[i], ActorType::Player);
-            }
-            applyRuleFeedbackAndRescore(s, cands, count, ActorType::Player);
-            uint8_t chosen_idx = 255;
-            uint8_t best_idx = 255;
-            if (findCandidateByAction(cands, count, t, param, chosen_idx) && chooseBestCandidate(cands, count, best_idx)) {
-                logCandidates(s, cands, count, chosen_idx, ActorType::Player);
             }
             if (addStepToProgram(s, t, param, false)) {
                 s.turn = TurnState::AITurn;
@@ -1130,7 +1026,6 @@ int LCD() {
     Paint_SetScale(65);
     Paint_Clear(WHITE);
     hardware::initInfraredPins();
-    writeAiLogHeader();
     startYdfWorker();
 
     ProgramState state;
