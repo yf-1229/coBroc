@@ -30,8 +30,8 @@ namespace {
     // general
     constexpr uint8_t MAX_MOVES = 12;
     constexpr uint8_t MAX_HISTORY = 32;
-    constexpr uint8_t MAX_FOR_REPEAT = 9;
-    constexpr uint8_t MAX_FOR_DEPTH = 4;
+    constexpr uint8_t MAX_REPEAT = 9;
+    constexpr uint8_t MAX_REPEAT_DEPTH = 4;
     // block list
     constexpr uint8_t LIST_VISIBLE = 8;
     constexpr uint16_t LIST_TOP_Y = 36;
@@ -48,7 +48,7 @@ namespace {
         Move = 1,
         Draw = 2,
         If = 3,
-        For = 4,
+        Repeat = 4,
         End = 5
     };
 
@@ -75,7 +75,7 @@ namespace {
 
     struct ProgramStep {
         BlockType type = BlockType::None;
-        uint8_t param = 0; // Move-> move length, Draw-> Color, For-> repeat times
+        uint8_t param = 0; // Move-> move length, Draw-> Color, Repeat-> repeat times
         bool from_ai = false;
     };
 
@@ -92,7 +92,7 @@ namespace {
         uint8_t scroll_top = 0;
         uint8_t selected_block_idx = 1;
         uint8_t selected_param = 0;
-        uint8_t syntax_depth = 0; // 現在開いている IF/FOR のネスト数
+        uint8_t syntax_depth = 0; // 現在開いている IF/REPEAT のネスト数
 
         TurnState turn = TurnState::PlayerTurn;
         bool compiled_ok = false;
@@ -104,7 +104,7 @@ namespace {
         "MOVE",
         "DRAW",
         "IF",
-        "FOR",
+        "REPEAT",
         "END",
     };
 
@@ -114,14 +114,14 @@ namespace {
     }
 
     bool isPlayableBlock(const BlockType t) {
-        return t == BlockType::Move || t == BlockType::Draw || t == BlockType::If || t == BlockType::For || t == BlockType::End;
+        return t == BlockType::Move || t == BlockType::Draw || t == BlockType::If || t == BlockType::Repeat || t == BlockType::End;
     }
 
     bool blockAllowedByDepth(const ProgramState& s, const BlockType t) {
         if (t == BlockType::End) {
             return s.syntax_depth > 0;
         }
-        if ((t == BlockType::If || t == BlockType::For) && s.syntax_depth >= MAX_FOR_DEPTH) {
+        if ((t == BlockType::If || t == BlockType::Repeat) && s.syntax_depth >= MAX_REPEAT_DEPTH) {
             return false;
         }
         return true;
@@ -163,8 +163,8 @@ namespace {
                 continue;
             }
             s.view_depths[i] = depth;
-            if (t == BlockType::If || t == BlockType::For) {
-                depth = static_cast<uint8_t>(std::min<uint8_t>(MAX_FOR_DEPTH, depth + 1));
+            if (t == BlockType::If || t == BlockType::Repeat) {
+                depth = static_cast<uint8_t>(std::min<uint8_t>(MAX_REPEAT_DEPTH, depth + 1));
             }
         }
     }
@@ -182,7 +182,7 @@ namespace {
         s.program[s.move_count] = {type, param,  from_ai};
         s.move_count++;
 
-        if (type == BlockType::If || type == BlockType::For) {
+        if (type == BlockType::If || type == BlockType::Repeat) {
             s.syntax_depth++;
         } else if (type == BlockType::End && s.syntax_depth > 0) {
             s.syntax_depth--;
@@ -245,8 +245,8 @@ namespace {
 
             if (step.type == BlockType::If) {
                 std::snprintf(line, sizeof(line), "%02u:IF v%u>=%s", idx + 1, step.param, step.from_ai ? " [AI]" : "");
-            } else if (step.type == BlockType::For) {
-                std::snprintf(line, sizeof(line), "%02u:FOR(%u)%s", idx + 1, step.param, step.from_ai ? " [AI]" : "");
+            } else if (step.type == BlockType::Repeat) {
+                std::snprintf(line, sizeof(line), "%02u:REPEAT(%u)%s", idx + 1, step.param, step.from_ai ? " [AI]" : "");
             } else if (step.type == BlockType::Draw) {
                 std::snprintf(line, sizeof(line), "%02u:%s(%u)%s", idx + 1, kBlockNames[static_cast<uint8_t>(step.type)], step.param, step.from_ai ? " [AI]" : "");
             } else {
@@ -308,8 +308,8 @@ namespace {
             if (t == BlockType::Move || t == BlockType::If) {
                 s.selected_param = static_cast<uint8_t>((s.selected_param + COLOR_SLOTS - 1) % COLOR_SLOTS);
                 std::snprintf(s.status_line, sizeof(s.status_line), "Select color:%u", s.selected_param);
-            } else if (t == BlockType::For) {
-                s.selected_param = static_cast<uint8_t>((s.selected_param + MAX_FOR_REPEAT - 1) % MAX_FOR_REPEAT);
+            } else if (t == BlockType::Repeat) {
+                s.selected_param = static_cast<uint8_t>((s.selected_param + MAX_REPEAT - 1) % MAX_REPEAT);
                 std::snprintf(s.status_line, sizeof(s.status_line), "Select repeat:%u", s.selected_param++);
             }
             sleep_ms(120);
@@ -320,8 +320,8 @@ namespace {
             if (t == BlockType::Move || t == BlockType::If) {
                 s.selected_param = static_cast<uint8_t>((s.selected_param + 1) % COLOR_SLOTS);
                 std::snprintf(s.status_line, sizeof(s.status_line), "Select color:%u", s.selected_param);
-            } else if (t == BlockType::For) {
-                s.selected_param = static_cast<uint8_t>((s.selected_param + 1) % MAX_FOR_REPEAT);
+            } else if (t == BlockType::Repeat) {
+                s.selected_param = static_cast<uint8_t>((s.selected_param + 1) % MAX_REPEAT);
                 std::snprintf(s.status_line, sizeof(s.status_line), "Select repeat:%u", s.selected_param++);
             }
             sleep_ms(120);
