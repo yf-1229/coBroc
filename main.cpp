@@ -582,7 +582,6 @@ namespace {
     }
 
     void drawProgramList(const ProgramState& s) {
-        
         for (uint8_t row = 0; row < LIST_VISIBLE; row++) {
             const uint8_t idx = static_cast<uint8_t>(s.scroll_top + row);
             const uint16_t y = static_cast<uint16_t>(LIST_TOP_Y + row * LIST_ROW_H);
@@ -610,6 +609,16 @@ namespace {
                 step.from_ai ? " [AI]" : ""
             );
             Paint_DrawString_EN(indent_x, y + 2, line, &Font12, BLACK, WHITE);
+
+            if (step.type == BlockType::Draw || step.type == BlockType::If) {
+                const UWORD dot_color = paintColorByIndex(step.param);
+                const uint16_t swatch_left = 210;
+                const uint16_t swatch_top = static_cast<uint16_t>(y + 2);
+                const uint16_t dot_x = 220;
+                const uint16_t dot_y = static_cast<uint16_t>(y + 8);
+                Paint_DrawRectangle(swatch_left, swatch_top, 230, static_cast<uint16_t>(y + 14), BLACK, DOT_PIXEL_1X1, DRAW_FILL_EMPTY);
+                Paint_DrawCircle(dot_x, dot_y, 4, dot_color, DOT_PIXEL_1X1, DRAW_FILL_FULL);
+            }
         }
     }
 
