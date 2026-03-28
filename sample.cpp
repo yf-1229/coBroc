@@ -452,6 +452,138 @@ bool compileAndRun(ProgramState& s) {
     return true;
 }
 
+void drawBlockIcon(const BlockType type, const uint16_t center_x, const uint16_t center_y, const bool from_ai) {
+    const UWORD color = from_ai ? BLUE : BLACK;
+    switch (type) {
+        case BlockType::Move:
+            Paint_DrawLine(
+                static_cast<uint16_t>(center_x - 3),
+                center_y,
+                static_cast<uint16_t>(center_x + 3),
+                center_y,
+                color,
+                DOT_PIXEL_1X1,
+                LINE_STYLE_SOLID
+            );
+            Paint_DrawLine(
+                static_cast<uint16_t>(center_x + 3),
+                center_y,
+                static_cast<uint16_t>(center_x + 1),
+                static_cast<uint16_t>(center_y - 2),
+                color,
+                DOT_PIXEL_1X1,
+                LINE_STYLE_SOLID
+            );
+            Paint_DrawLine(
+                static_cast<uint16_t>(center_x + 3),
+                center_y,
+                static_cast<uint16_t>(center_x + 1),
+                static_cast<uint16_t>(center_y + 2),
+                color,
+                DOT_PIXEL_1X1,
+                LINE_STYLE_SOLID
+            );
+            break;
+        case BlockType::Draw:
+            Paint_DrawCircle(center_x, center_y, 3, color, DOT_PIXEL_1X1, DRAW_FILL_FULL);
+            break;
+        case BlockType::DefineVar:
+            Paint_DrawRectangle(
+                static_cast<uint16_t>(center_x - 3),
+                static_cast<uint16_t>(center_y - 3),
+                static_cast<uint16_t>(center_x + 3),
+                static_cast<uint16_t>(center_y + 3),
+                color,
+                DOT_PIXEL_1X1,
+                DRAW_FILL_EMPTY
+            );
+            break;
+        case BlockType::If:
+            Paint_DrawLine(
+                center_x,
+                static_cast<uint16_t>(center_y - 3),
+                static_cast<uint16_t>(center_x + 3),
+                center_y,
+                color,
+                DOT_PIXEL_1X1,
+                LINE_STYLE_SOLID
+            );
+            Paint_DrawLine(
+                static_cast<uint16_t>(center_x + 3),
+                center_y,
+                center_x,
+                static_cast<uint16_t>(center_y + 3),
+                color,
+                DOT_PIXEL_1X1,
+                LINE_STYLE_SOLID
+            );
+            Paint_DrawLine(
+                center_x,
+                static_cast<uint16_t>(center_y + 3),
+                static_cast<uint16_t>(center_x - 3),
+                center_y,
+                color,
+                DOT_PIXEL_1X1,
+                LINE_STYLE_SOLID
+            );
+            Paint_DrawLine(
+                static_cast<uint16_t>(center_x - 3),
+                center_y,
+                center_x,
+                static_cast<uint16_t>(center_y - 3),
+                color,
+                DOT_PIXEL_1X1,
+                LINE_STYLE_SOLID
+            );
+            break;
+        case BlockType::For:
+            Paint_DrawCircle(center_x, center_y, 3, color, DOT_PIXEL_1X1, DRAW_FILL_EMPTY);
+            Paint_DrawLine(
+                static_cast<uint16_t>(center_x + 1),
+                static_cast<uint16_t>(center_y - 3),
+                static_cast<uint16_t>(center_x + 3),
+                static_cast<uint16_t>(center_y - 3),
+                color,
+                DOT_PIXEL_1X1,
+                LINE_STYLE_SOLID
+            );
+            Paint_DrawLine(
+                static_cast<uint16_t>(center_x + 3),
+                static_cast<uint16_t>(center_y - 3),
+                static_cast<uint16_t>(center_x + 2),
+                static_cast<uint16_t>(center_y - 4),
+                color,
+                DOT_PIXEL_1X1,
+                LINE_STYLE_SOLID
+            );
+            break;
+        case BlockType::End:
+            Paint_DrawLine(
+                static_cast<uint16_t>(center_x - 3),
+                static_cast<uint16_t>(center_y - 3),
+                static_cast<uint16_t>(center_x + 3),
+                static_cast<uint16_t>(center_y + 3),
+                color,
+                DOT_PIXEL_1X1,
+                LINE_STYLE_SOLID
+            );
+            Paint_DrawLine(
+                static_cast<uint16_t>(center_x - 3),
+                static_cast<uint16_t>(center_y + 3),
+                static_cast<uint16_t>(center_x + 3),
+                static_cast<uint16_t>(center_y - 3),
+                color,
+                DOT_PIXEL_1X1,
+                LINE_STYLE_SOLID
+            );
+            break;
+        case BlockType::None:
+        default:
+            Paint_DrawPoint(center_x, center_y, color, DOT_PIXEL_2X2, DOT_FILL_AROUND);
+            break;
+    }
+}
+
 void drawProgramList(const ProgramState& s) {
     Paint_DrawString_EN(4, 4, "Program (List + Indent)", &Font16, BLACK, WHITE);
     Paint_DrawString_EN(4, 20, s.status_line, &Font12, BLACK, WHITE);
@@ -475,6 +607,11 @@ void drawProgramList(const ProgramState& s) {
 
         const auto& step = s.program[idx];
         const uint16_t indent_x = static_cast<uint16_t>(LIST_START_X + s.view_depths[idx] * INDENT_STEP);
+        const uint16_t icon_center_x = static_cast<uint16_t>(indent_x + 4);
+        const uint16_t icon_center_y = static_cast<uint16_t>(y + 6);
+        const uint16_t text_x = static_cast<uint16_t>(indent_x + 12);
+        drawBlockIcon(step.type, icon_center_x, icon_center_y, step.from_ai);
+
         char line[72];
         if (step.type == BlockType::DefineVar) {
             std::snprintf(line, sizeof(line), "%02u:DEFV v%u=%u%s", idx + 1, step.var_id, step.param, step.from_ai ? " [AI]" : "");
@@ -485,7 +622,7 @@ void drawProgramList(const ProgramState& s) {
         } else {
             std::snprintf(line, sizeof(line), "%02u:%s(%u)%s", idx + 1, kBlockNames[static_cast<uint8_t>(step.type)], step.param, step.from_ai ? " [AI]" : "");
         }
-        Paint_DrawString_EN(indent_x, y, line, &Font12, BLACK, WHITE);
+        Paint_DrawString_EN(text_x, y, line, &Font12, BLACK, WHITE);
     }
 }
 
