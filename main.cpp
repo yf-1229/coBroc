@@ -1,5 +1,7 @@
 #include "main.h"
 
+#include <random>
+
 extern "C" {
 #include "Infrared.h"
 #include "LCD_1in3.h"
@@ -54,11 +56,22 @@ namespace {
     constexpr uint8_t MOVE_PARAM_MIN = 1;
     constexpr uint8_t MOVE_PARAM_MAX = 19;             // cell index range 1..19
     constexpr uint8_t MAX_REPEAT = 7;                  // 1..7
-    constexpr uint8_t RESULT_COLS = 5;
-    constexpr uint8_t RESULT_ROWS = 4;
+    constexpr uint16_t RESULT_WIDTH = 240;
+    constexpr uint16_t RESULT_HEIGHT = 240;
+    constexpr uint8_t RESULT_RADIUS = 6;
+    constexpr uint16_t MAX_DRAW_EVENTS = 128;
+    constexpr uint8_t RANDOM_STEP_MIN = 0;
+    constexpr uint8_t RANDOM_STEP_MAX = 2;
+    constexpr int8_t RANDOM_STEP_OFFSET = 1;
+    constexpr int16_t RANDOM_STEP_PIXELS = static_cast<int16_t>(RESULT_RADIUS + 2);
     constexpr size_t AI_CANDIDATE_SLOTS = MOVE_PARAM_MAX - MOVE_PARAM_MIN + 1 +
                                           (COLOR_PARAM_MAX - COLOR_PARAM_MIN + 1) * 2 +
                                           MAX_REPEAT + 1;
+
+    std::random_device g_random_device;
+    std::mt19937 g_rng(g_random_device());
+    std::uniform_int_distribution<uint16_t> g_dist_result_axis(0, static_cast<uint16_t>(RESULT_WIDTH - 1));
+    std::uniform_int_distribution<uint8_t> g_dist_step_unit(RANDOM_STEP_MIN, RANDOM_STEP_MAX);
 
     enum class BlockType : uint8_t {
         None = 0,
@@ -75,11 +88,6 @@ namespace {
         SelectInputColor = 2,
         RunProgram = 3,
         Finished = 4
-    };
-
-    enum class ActorType : uint8_t {
-        Player = 0,
-        AI = 1,
     };
 
     constexpr std::array<UWORD, COLOR_COUNT> kPaintColors = {
@@ -161,10 +169,13 @@ namespace {
     };
 
     struct RuntimeState {
-        uint8_t x = 0;
-        uint8_t y = 0;
-        uint8_t anchor_cell = 0;
-        uint8_t draw_color = 0;
+        struct DrawCircle {
+            uint8_t x = 0;
+            uint8_t y = 0;
+            uint8_t color = 0;
+        };
+        std::array<DrawCircle, MAX_DRAW_EVENTS> circles{};
+        uint16_t circle_count = 0;
     };
 
     struct LoopFrame {
@@ -236,6 +247,31 @@ namespace {
         return t == BlockType::Move || t == BlockType::Draw || t == BlockType::If || t == BlockType::Repeat || t == BlockType::End;
     }
 
+    bool insideMoveScope(const ProgramState& s) {
+        std::array<BlockType, MAX_MOVES> open_stack{};
+        uint8_t open_top = 0;
+        for (uint8_t i = 0; i < s.move_count; i++) {
+            const auto t = s.program[i].type;
+            if (t == BlockType::End) {
+                if (open_top > 0) {
+                    open_top--;
+                }
+                continue;
+            }
+            if (t == BlockType::Move || t == BlockType::If || t == BlockType::Repeat) {
+                if (open_top < MAX_MOVES) {
+                    open_stack[open_top++] = t;
+                }
+            }
+        }
+        for (uint8_t i = 0; i < open_top; i++) {
+            if (open_stack[i] == BlockType::Move) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     bool blockAllowedByDepth(const ProgramState& s, BlockType t) {
         if (t == BlockType::End) {
             return s.syntax_depth > 0;
@@ -243,7 +279,7 @@ namespace {
         if ((t == BlockType::Move || t == BlockType::If || t == BlockType::Repeat) && s.syntax_depth >= MAX_NEST_DEPTH) {
             return false;
         }
-        if (s.syntax_depth > 0 && t == BlockType::Move) {
+        if (insideMoveScope(s) && (t == BlockType::If || t == BlockType::Repeat)) {
             return false;
         }
         return true;
@@ -256,9 +292,6 @@ namespace {
         if (s.move_count > 0) {
             const BlockType last_type = s.program[s.move_count - 1].type;
             if ((last_type == BlockType::Repeat || last_type == BlockType::If) && t == last_type) {
-                return false;
-            }
-            if (last_type == BlockType::Move && t != BlockType::Draw) {
                 return false;
             }
         }
@@ -343,7 +376,7 @@ namespace {
         return true;
     }
 
-    blockode::ydf::CandidateFeatures makeYdfFeatures(const ProgramState& s, const AICandidate& c, ActorType actor) {
+    blockode::ydf::CandidateFeatures makeYdfFeatures(const ProgramState& s, const AICandidate& c) {
         blockode::ydf::CandidateFeatures f{};
         f.game_id = s.game_id;
         f.turn = static_cast<uint32_t>(s.move_count + 1);
@@ -360,7 +393,7 @@ namespace {
         f.transition_prev_to_candidate =
             s.history_size == 0 ? 0 : s.transitions[f.last_type][static_cast<uint8_t>(c.type)];
         f.legal = c.legal ? 1u : 0u;
-        f.actor = actor == ActorType::AI ? 1u : 0u;
+        f.actor = 1u; // current pipeline evaluates AI decisions only
         f.feedback_penalty = c.feedback_penalty;
         return f;
     }
@@ -402,8 +435,8 @@ namespace {
         g_ydf_worker_running = false;
     }
 
-    float ydfPredictSuitability(const ProgramState& s, const AICandidate& c, ActorType actor) {
-        const auto features = makeYdfFeatures(s, c, actor);
+    float ydfPredictSuitability(const ProgramState& s, const AICandidate& c) {
+        const auto features = makeYdfFeatures(s, c);
         if (!g_ydf_worker_running) {
             const auto pred = blockode::ydf::Model::Predict(features);
             if (!pred.ok) {
@@ -455,7 +488,7 @@ namespace {
                 c.type = t;
                 c.param = p;
                 c.legal = isLegalCandidate(s, t, p);
-                c.suitability = c.legal ? ydfPredictSuitability(s, c, ActorType::AI) : -1.0f;
+                c.suitability = c.legal ? ydfPredictSuitability(s, c) : -1.0f;
                 cands[out_count++] = c;
             }
         }
@@ -512,7 +545,7 @@ namespace {
         return false;
     }
 
-    void applyRuleFeedbackAndRescore(const ProgramState& s, std::array<AICandidate, AI_CANDIDATE_SLOTS>& cands, uint8_t count, ActorType actor) {
+    void applyRuleFeedbackAndRescore(const ProgramState& s, std::array<AICandidate, AI_CANDIDATE_SLOTS>& cands, uint8_t count) {
         const uint8_t draw_streak = tailTypeStreak(s, BlockType::Draw);
         for (uint8_t i = 0; i < count; i++) {
             auto& c = cands[i];
@@ -522,7 +555,7 @@ namespace {
             if (violatesAIMoveRule(s, c)) {
                 c.feedback_penalty = static_cast<uint8_t>(std::min<uint16_t>(255, c.feedback_penalty + 1));
             }
-            c.suitability = ydfPredictSuitability(s, c, actor);
+            c.suitability = ydfPredictSuitability(s, c);
 
             if (c.type == BlockType::Draw) {
                 // Prevent a Draw-only loop unless Draw is structurally required.
@@ -559,10 +592,46 @@ namespace {
         return chosen != 255;
     }
 
+    void addDrawCircle(RuntimeState& runtime, uint8_t color, uint8_t move_steps) {
+        if (runtime.circle_count >= MAX_DRAW_EVENTS) {
+            return;
+        }
+        auto& circle = runtime.circles[runtime.circle_count++];
+        circle.color = color;
+        const int16_t min_v = RESULT_RADIUS;
+        const int16_t max_x = static_cast<int16_t>(RESULT_WIDTH - RESULT_RADIUS - 1);
+        const int16_t max_y = static_cast<int16_t>(RESULT_HEIGHT - RESULT_RADIUS - 1);
+        circle.x = static_cast<uint8_t>(std::clamp<int16_t>(static_cast<int16_t>(g_dist_result_axis(g_rng)), min_v, max_x));
+        circle.y = static_cast<uint8_t>(std::clamp<int16_t>(static_cast<int16_t>(g_dist_result_axis(g_rng)), min_v, max_y));
+
+        for (uint8_t i = 0; i < move_steps; i++) {
+            const int8_t dx = static_cast<int8_t>(g_dist_step_unit(g_rng)) - RANDOM_STEP_OFFSET;
+            const int8_t dy = static_cast<int8_t>(g_dist_step_unit(g_rng)) - RANDOM_STEP_OFFSET;
+            const int16_t nx = static_cast<int16_t>(circle.x) + dx * RANDOM_STEP_PIXELS;
+            const int16_t ny = static_cast<int16_t>(circle.y) + dy * RANDOM_STEP_PIXELS;
+            circle.x = static_cast<uint8_t>(std::clamp<int16_t>(nx, min_v, max_x));
+            circle.y = static_cast<uint8_t>(std::clamp<int16_t>(ny, min_v, max_y));
+        }
+    }
+
+    bool chooseBestNonEndCandidate(const std::array<AICandidate, AI_CANDIDATE_SLOTS>& cands, uint8_t count, uint8_t& chosen) {
+        chosen = 255;
+        for (uint8_t i = 0; i < count; i++) {
+            const auto& c = cands[i];
+            if (!c.legal || c.type == BlockType::End) {
+                continue;
+            }
+            if (chosen == 255 || c.suitability > cands[chosen].suitability) {
+                chosen = i;
+            }
+        }
+        return chosen != 255;
+    }
+
     void performAITurn(ProgramState& s) {
         uint8_t count = 0;
         auto cands = buildCandidates(s, count);
-        applyRuleFeedbackAndRescore(s, cands, count, ActorType::AI);
+        applyRuleFeedbackAndRescore(s, cands, count);
         uint8_t chosen = 255;
         if (!chooseBestCandidate(cands, count, chosen)) {
             s.turn = TurnState::RunProgram;
@@ -570,7 +639,7 @@ namespace {
         }
         if (cands[chosen].feedback_penalty > 0) {
             cands[chosen].feedback_penalty = static_cast<uint8_t>(std::min<uint16_t>(255, cands[chosen].feedback_penalty + 1));
-            cands[chosen].suitability = ydfPredictSuitability(s, cands[chosen], ActorType::AI);
+            cands[chosen].suitability = ydfPredictSuitability(s, cands[chosen]);
             uint8_t retry = 255;
             if (chooseBestCandidate(cands, count, retry) && retry != chosen) {
                 chosen = retry;
@@ -583,6 +652,19 @@ namespace {
                 const float gap = cands[chosen].suitability - cands[non_draw].suitability;
                 if (draw_streak >= 2 || gap <= 0.08f) {
                     chosen = non_draw;
+                }
+            }
+        }
+        // Avoid immediate closure after IF/REPEAT unless it is clearly better.
+        if (cands[chosen].type == BlockType::End && s.move_count > 0) {
+            const auto prev = s.program[s.move_count - 1].type;
+            if (prev == BlockType::If || prev == BlockType::Repeat) {
+                uint8_t non_end = 255;
+                if (chooseBestNonEndCandidate(cands, count, non_end)) {
+                    const float end_gap = cands[chosen].suitability - cands[non_end].suitability;
+                    if (end_gap <= 0.15f) {
+                        chosen = non_end;
+                    }
                 }
             }
         }
@@ -621,10 +703,7 @@ namespace {
         std::snprintf(
             line2,
             sizeof(line2),
-            "A:add B:type X:param Y:run depth:%u ydf:%s(%s)",
-            s.syntax_depth,
-            blockode::ydf::kModelAvailable ? "on" : "off",
-            blockode::ydf::kBackendName
+            "A:add B:type X:param Y:run"
         );
         Paint_DrawString_EN(8, HEADER_TOP_Y + 20, line2, &Font12, BLACK, WHITE);
 
@@ -686,7 +765,6 @@ namespace {
     bool compileAndRun(ProgramState& s) {
         s.compiled_ok = false;
         s.runtime = RuntimeState{};
-        s.runtime.draw_color = colorIndexFromParam(s.run_input_color);
         finalizeSyntax(s);
 
         std::array<int8_t, MAX_MOVES> block_end{};
@@ -719,7 +797,7 @@ namespace {
         std::array<LoopFrame, MAX_NEST_DEPTH> loops{};
         uint8_t loop_top = 0;
         uint8_t pc = 0;
-        std::array<uint8_t, MAX_NEST_DEPTH> move_anchor_stack{};
+        std::array<uint8_t, MAX_NEST_DEPTH> move_step_stack{};
         uint8_t move_anchor_top = 0;
 
         while (pc < s.move_count) {
@@ -729,22 +807,16 @@ namespace {
                     if (block_end[pc] < 0 || move_anchor_top >= MAX_NEST_DEPTH) {
                         return false;
                     }
-                    move_anchor_stack[move_anchor_top++] = static_cast<uint8_t>(step.param - MOVE_PARAM_MIN);
-                    s.runtime.anchor_cell = static_cast<uint8_t>(step.param - MOVE_PARAM_MIN);
-                    s.runtime.x = static_cast<uint8_t>(s.runtime.anchor_cell % RESULT_COLS);
-                    s.runtime.y = static_cast<uint8_t>(s.runtime.anchor_cell / RESULT_COLS);
+                    move_step_stack[move_anchor_top++] = step.param;
                     pc++;
                     break;
                 }
                 case BlockType::Draw:
-                    s.runtime.draw_color = colorIndexFromParam(step.param);
-                    if (move_anchor_top > 0) {
-                        s.runtime.anchor_cell = move_anchor_stack[move_anchor_top - 1];
-                    } else {
-                        s.runtime.anchor_cell = 0;
-                    }
-                    s.runtime.x = static_cast<uint8_t>(s.runtime.anchor_cell % RESULT_COLS);
-                    s.runtime.y = static_cast<uint8_t>(s.runtime.anchor_cell / RESULT_COLS);
+                    addDrawCircle(
+                        s.runtime,
+                        colorIndexFromParam(step.param),
+                        move_anchor_top > 0 ? move_step_stack[move_anchor_top - 1] : 0
+                    );
                     pc++;
                     break;
                 case BlockType::If: {
@@ -795,13 +867,6 @@ namespace {
                             return false;
                         }
                         move_anchor_top--;
-                        if (move_anchor_top > 0) {
-                            s.runtime.anchor_cell = move_anchor_stack[move_anchor_top - 1];
-                        } else {
-                            s.runtime.anchor_cell = 0;
-                        }
-                        s.runtime.x = static_cast<uint8_t>(s.runtime.anchor_cell % RESULT_COLS);
-                        s.runtime.y = static_cast<uint8_t>(s.runtime.anchor_cell / RESULT_COLS);
                         pc++;
                         break;
                     }
@@ -823,36 +888,13 @@ namespace {
     void drawRunPreview(const ProgramState& s) {
         Paint_Clear(WHITE);
         Paint_DrawString_EN(4, 4, "Run Preview", &Font16, BLACK, WHITE);
-        constexpr uint16_t origin_x = 20;
-        constexpr uint16_t origin_y = 40;
-        constexpr uint16_t cell = 20;
-
-        for (uint8_t y = 0; y < RESULT_ROWS; y++) {
-            for (uint8_t x = 0; x < RESULT_COLS; x++) {
-                const auto x0 = static_cast<uint16_t>(origin_x + x * cell);
-                const auto y0 = static_cast<uint16_t>(origin_y + y * cell);
-                Paint_DrawRectangle(x0, y0, x0 + cell - 2, y0 + cell - 2, GRAY, DOT_PIXEL_1X1, DRAW_FILL_EMPTY);
-                const uint8_t idx = static_cast<uint8_t>(y * RESULT_COLS + x);
-                char id[4];
-                std::snprintf(id, sizeof(id), "%u", idx);
-                Paint_DrawString_EN(
-                    static_cast<UWORD>(x0 + 3),
-                    static_cast<UWORD>(y0 + 3),
-                    id,
-                    &Font12,
-                    BLACK,
-                    WHITE
-                );
-            }
+        for (uint16_t i = 0; i < s.runtime.circle_count; i++) {
+            const auto& c = s.runtime.circles[i];
+            Paint_DrawCircle(c.x, c.y, RESULT_RADIUS, kPaintColors[c.color], DOT_PIXEL_1X1, DRAW_FILL_FULL);
         }
 
-        const auto px = static_cast<uint16_t>(origin_x + s.runtime.x * cell + (cell / 2));
-        const auto py = static_cast<uint16_t>(origin_y + s.runtime.y * cell + (cell / 2));
-        Paint_DrawCircle(px, py, 6, kPaintColors[s.runtime.draw_color], DOT_PIXEL_1X1, DRAW_FILL_FULL);
-        Paint_DrawCircle(202, 22, 8, kPaintColors[s.runtime.draw_color], DOT_PIXEL_1X1, DRAW_FILL_FULL);
-
-        char line[64];
-        std::snprintf(line, sizeof(line), "cell:%u x:%u y:%u color:%u", s.runtime.anchor_cell, s.runtime.x, s.runtime.y, s.runtime.draw_color);
+        char line[96];
+        std::snprintf(line, sizeof(line), "circles:%u", s.runtime.circle_count);
         Paint_DrawString_EN(4, 220, line, &Font12, BLACK, WHITE);
     }
 

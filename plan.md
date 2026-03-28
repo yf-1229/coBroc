@@ -81,3 +81,59 @@
   - done: `main.cpp` の `#include "external/ml/ydf.h"` を削除。
   - done: `CMakeLists.txt` の `external/ml/ydf.h` 参照を削除。
   - done: `external/ml/ydf.h` を削除。
+
+# TODO-07
+
+- 上部ヘッダーの表示で、色のボックスとdepthの文字が重なっている。depthとydfの表示はいらないので削除して。
+  - done: ヘッダー2行目を `A:add B:type X:param Y:run` のみへ変更し、`depth` と `ydf` 表示を削除。
+- REPEATやIFなどをおいたらAIが絶対にENDしてくるのですが、データセットを変えるべきでは？改善して。
+  - done: `performAITurn` に「IF/REPEAT直後の即END抑制」を追加。ENDと最良非END候補の適切度差が小さい場合は非ENDを採用するよう改善。
+
+# TODO-08 
+- 最後のリザルト画面の大幅変更をしてほしい。
+- グリッドは削除して、すべてのDrawの内容を円で表示して。
+- 円はすべてランダムな座標に配置して(240*240)
+- Moveがついている円については、パラメータの数だけランダムに移動して。(移動回数 = パラメータ)
+- TODO-07とTODO-08の変更で不要になった定数や関数があれば削除して。
+  - done: 実行結果を「グリッドなし」へ変更し、`Draw` 実行ごとに円を描画する方式へ変更。
+  - done: すべての円を `240x240` 内のランダム座標へ配置。
+  - done: `Move` ネスト下の `Draw` は `Move` のparam回数ぶんランダム移動を適用。
+  - done: 旧グリッド描画で不要になった `RESULT_COLS/RESULT_ROWS` と座標アンカー依存処理を削除。
+
+
+# TODO-09
+- 240*240 のランダムな数字を選択するのに、67-69行に追加した乱数発生器を使って。マジックナンバーは避けてほしい。
+  - done: `std::random_device` + `std::mt19937` + `std::uniform_int_distribution` を乱数生成に使用し、`240x240` 座標・移動量の生成を定数化（`RANDOM_STEP_*` など）してマジックナンバーを削減。
+- IF,FORのネストの中では、MOVEを使うことをAllowして。
+  - done: `isLegalCandidate` の「`last_type == Move` なら Draw 以外禁止」制約を削除し、IF/REPEAT配下でMoveを許可。
+- MOVEのネストの中では、IF,FORの使用禁止
+  - done: `insideMoveScope()` を追加し、Moveスコープ内では `If` / `Repeat` を `blockAllowedByDepth` で禁止。
+
+# TODO-10（Pico軽量化の実装計画）
+
+## 問題とアプローチ
+
+- Pico実機で重くなりやすい箇所は、`Paint_Clear` を伴う全面再描画、AIターンでの候補全件予測、フレームごとの文字列整形、コア間キュー往復です。
+- 軽量化は「描画回数を減らす」「推論回数を減らす」「1回あたりの処理コストを下げる」の順で進める。
+- 見た目・ルールを維持しつつ、挙動差分が出る変更は段階導入（フラグ化）する。
+
+## TODO一覧（提案）
+
+- `perf-dirty-redraw`:
+  - 全面 `Paint_Clear` を減らし、ヘッダー/変更行/結果画面を差分再描画する。
+- `perf-ai-candidate-pruning`:
+  - 予測前に候補を絞り込み、再スコア回数を削減（同一ターンでの重複推論を避ける）。
+- `perf-ai-batch-core1`:
+  - コア1への予測要求を候補ごとの往復ではなく、バッチ処理化して同期オーバーヘッドを減らす。
+- `perf-ui-string-cache`:
+  - `snprintf` を毎フレーム実行せず、状態変更時のみ再生成して文字列をキャッシュする。
+- `perf-rng-fastpath`:
+  - 結果画面の乱数使用を軽量化（必要なら分布生成の再利用範囲を拡大し、呼び出し回数を削減）。
+- `perf-release-profile`:
+  - Release用に `-Os` / `-flto` / `NDEBUG` 前提のビルドプロファイルを用意して実機計測する。
+
+## 依存関係
+
+- `perf-ai-batch-core1` depends on `perf-ai-candidate-pruning`
+- `perf-release-profile` depends on `perf-dirty-redraw`
+- `perf-release-profile` depends on `perf-ai-batch-core1`
