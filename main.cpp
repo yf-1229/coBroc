@@ -13,7 +13,6 @@ extern "C" {
 #include <array>
 #include <algorithm>
 #include <cstdio>
-#include <cstring>
 #include <cstdlib>
 
 #include "pico/multicore.h"
@@ -68,8 +67,7 @@ namespace {
                                           (COLOR_PARAM_MAX - COLOR_PARAM_MIN + 1) * 2 +
                                           MAX_REPEAT + 1;
 
-    std::random_device g_random_device;
-    std::mt19937 g_rng(g_random_device());
+    std::mt19937 g_rng(std::random_device{}());
     std::uniform_int_distribution<uint16_t> g_dist_result_axis(0, static_cast<uint16_t>(RESULT_WIDTH - 1));
     std::uniform_int_distribution<uint8_t> g_dist_step_unit(RANDOM_STEP_MIN, RANDOM_STEP_MAX);
 
@@ -209,7 +207,6 @@ namespace {
         uint8_t run_input_color = COLOR_PARAM_MIN;
 
         TurnState turn = TurnState::PlayerTurn;
-        bool compiled_ok = false;
         RuntimeState runtime{};
     };
 
@@ -578,20 +575,6 @@ namespace {
         }
     }
 
-    bool chooseBestNonDrawCandidate(const std::array<AICandidate, AI_CANDIDATE_SLOTS>& cands, uint8_t count, uint8_t& chosen) {
-        chosen = 255;
-        for (uint8_t i = 0; i < count; i++) {
-            const auto& c = cands[i];
-            if (!c.legal || c.type == BlockType::Draw) {
-                continue;
-            }
-            if (chosen == 255 || c.suitability > cands[chosen].suitability) {
-                chosen = i;
-            }
-        }
-        return chosen != 255;
-    }
-
     void addDrawCircle(RuntimeState& runtime, uint8_t color, uint8_t move_steps) {
         if (runtime.circle_count >= MAX_DRAW_EVENTS) {
             return;
@@ -614,11 +597,11 @@ namespace {
         }
     }
 
-    bool chooseBestNonEndCandidate(const std::array<AICandidate, AI_CANDIDATE_SLOTS>& cands, uint8_t count, uint8_t& chosen) {
+    bool chooseBestExcludingType(const std::array<AICandidate, AI_CANDIDATE_SLOTS>& cands, uint8_t count, BlockType excluded, uint8_t& chosen) {
         chosen = 255;
         for (uint8_t i = 0; i < count; i++) {
             const auto& c = cands[i];
-            if (!c.legal || c.type == BlockType::End) {
+            if (!c.legal || c.type == excluded) {
                 continue;
             }
             if (chosen == 255 || c.suitability > cands[chosen].suitability) {
@@ -647,7 +630,7 @@ namespace {
         }
         if (cands[chosen].type == BlockType::Draw) {
             uint8_t non_draw = 255;
-            if (chooseBestNonDrawCandidate(cands, count, non_draw)) {
+            if (chooseBestExcludingType(cands, count, BlockType::Draw, non_draw)) {
                 const uint8_t draw_streak = tailTypeStreak(s, BlockType::Draw);
                 const float gap = cands[chosen].suitability - cands[non_draw].suitability;
                 if (draw_streak >= 2 || gap <= 0.08f) {
@@ -660,7 +643,7 @@ namespace {
             const auto prev = s.program[s.move_count - 1].type;
             if (prev == BlockType::If || prev == BlockType::Repeat) {
                 uint8_t non_end = 255;
-                if (chooseBestNonEndCandidate(cands, count, non_end)) {
+                if (chooseBestExcludingType(cands, count, BlockType::End, non_end)) {
                     const float end_gap = cands[chosen].suitability - cands[non_end].suitability;
                     if (end_gap <= 0.15f) {
                         chosen = non_end;
@@ -763,7 +746,6 @@ namespace {
     }
 
     bool compileAndRun(ProgramState& s) {
-        s.compiled_ok = false;
         s.runtime = RuntimeState{};
         finalizeSyntax(s);
 
@@ -881,7 +863,6 @@ namespace {
             }
         }
 
-        s.compiled_ok = true;
         return true;
     }
 
