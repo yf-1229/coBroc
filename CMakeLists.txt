@@ -1,4 +1,4 @@
-set(PICO_BOARD pico CACHE STRING "Board type")
+set(PICO_BOARD pico2 CACHE STRING "Board type")
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 
@@ -27,7 +27,6 @@ include_directories(./external/Infrared)
 add_executable(codeS
         main.h
         main.cpp
-        external/ml/ydf.h
 
 )
 
@@ -55,7 +54,6 @@ target_link_libraries(codeS PRIVATE
         Config
         Infrared
 )
-
 
 # Add the standard include files to the build
 target_include_directories(codeS PRIVATE
