@@ -426,7 +426,7 @@ namespace {
     std::array<AICandidate, AI_CANDIDATE_SLOTS> buildCandidates(const ProgramState& s, uint8_t& out_count) {
         std::array<AICandidate, AI_CANDIDATE_SLOTS> cands{};
         out_count = 0;
-        const std::array<BlockType, 5> blocks = {
+        constexpr std::array<BlockType, 5> blocks = {
             BlockType::Move, BlockType::Draw, BlockType::If, BlockType::Repeat, BlockType::End
         };
 
@@ -512,7 +512,7 @@ namespace {
         return false;
     }
 
-    void applyRuleFeedbackAndRescore(ProgramState& s, std::array<AICandidate, AI_CANDIDATE_SLOTS>& cands, uint8_t count, ActorType actor) {
+    void applyRuleFeedbackAndRescore(const ProgramState& s, std::array<AICandidate, AI_CANDIDATE_SLOTS>& cands, uint8_t count, ActorType actor) {
         const uint8_t draw_streak = tailTypeStreak(s, BlockType::Draw);
         for (uint8_t i = 0; i < count; i++) {
             auto& c = cands[i];
@@ -637,8 +637,8 @@ namespace {
 
     void drawProgramList(const ProgramState& s) {
         for (uint8_t row = 0; row < LIST_VISIBLE; row++) {
-            const uint8_t idx = static_cast<uint8_t>(s.scroll_top + row);
-            const uint16_t y = static_cast<uint16_t>(LIST_TOP_Y + row * LIST_ROW_H);
+            const auto idx = static_cast<uint8_t>(s.scroll_top + row);
+            const auto y = static_cast<uint16_t>(LIST_TOP_Y + row * LIST_ROW_H);
             if (idx >= MAX_MOVES) {
                 break;
             }
@@ -652,7 +652,7 @@ namespace {
             }
 
             const auto& step = s.program[idx];
-            const uint16_t indent_x = static_cast<uint16_t>(LIST_START_X + s.view_depths[idx] * INDENT_STEP);
+            const auto indent_x = static_cast<uint16_t>(LIST_START_X + s.view_depths[idx] * INDENT_STEP);
             char line[72];
             std::snprintf(
                 line,
@@ -666,10 +666,10 @@ namespace {
 
             if (step.type == BlockType::Draw || step.type == BlockType::If) {
                 const UWORD dot_color = paintColorByParam(step.param);
-                const uint16_t swatch_left = 210;
-                const uint16_t swatch_top = static_cast<uint16_t>(y + 2);
-                const uint16_t dot_x = 220;
-                const uint16_t dot_y = static_cast<uint16_t>(y + 8);
+                constexpr uint16_t swatch_left = 210;
+                const auto swatch_top = static_cast<uint16_t>(y + 2);
+                constexpr uint16_t dot_x = 220;
+                const auto dot_y = static_cast<uint16_t>(y + 8);
                 Paint_DrawRectangle(swatch_left, swatch_top, 230, static_cast<uint16_t>(y + 14), BLACK, DOT_PIXEL_1X1, DRAW_FILL_EMPTY);
                 Paint_DrawCircle(dot_x, dot_y, 4, dot_color, DOT_PIXEL_1X1, DRAW_FILL_FULL);
             }
@@ -697,7 +697,7 @@ namespace {
         std::array<uint8_t, MAX_MOVES> stack{};
         uint8_t top = 0;
         for (uint8_t pc = 0; pc < s.move_count; pc++) {
-            const BlockType t = s.program[pc].type;
+            const auto t = s.program[pc].type;
             if (t == BlockType::Move || t == BlockType::If || t == BlockType::Repeat) {
                 if (top >= MAX_MOVES) {
                     return false;
@@ -772,7 +772,7 @@ namespace {
                     if (start < 0) {
                         return false;
                     }
-                    const BlockType open_type = s.program[static_cast<uint8_t>(start)].type;
+                    const auto open_type = s.program[static_cast<uint8_t>(start)].type;
                     if (open_type == BlockType::Repeat) {
                         if (loop_top == 0) {
                             return false;
@@ -871,7 +871,7 @@ namespace {
         bool found = false;
         for (uint8_t i = 0; i < PLAYABLE_BLOCK_COUNT; i++) {
             next_idx = nextPlayableBlockIndex(next_idx);
-            const BlockType t = static_cast<BlockType>(next_idx);
+            const auto t = static_cast<BlockType>(next_idx);
             const uint8_t candidate_param = blockHasParam(t) ? minParamForBlock(t) : 0;
             if (!isLegalCandidate(s, t, candidate_param)) {
                 continue;
@@ -896,7 +896,7 @@ namespace {
     }
 
     void normalizeSelectedBlockType(ProgramState& s) {
-        const BlockType current = static_cast<BlockType>(s.selected_block_idx);
+        const auto current = static_cast<BlockType>(s.selected_block_idx);
         uint8_t current_param = 0;
         if (blockHasParam(current)) {
             const uint8_t min_param = minParamForBlock(current);
@@ -912,8 +912,8 @@ namespace {
         }
 
         for (uint8_t offset = 0; offset < PLAYABLE_BLOCK_COUNT; offset++) {
-            const uint8_t idx = static_cast<uint8_t>(FIRST_PLAYABLE_BLOCK + offset);
-            const BlockType t = static_cast<BlockType>(idx);
+            const auto idx = static_cast<uint8_t>(FIRST_PLAYABLE_BLOCK + offset);
+            const auto t = static_cast<BlockType>(idx);
             const uint8_t candidate_param = blockHasParam(t) ? minParamForBlock(t) : 0;
             if (!isLegalCandidate(s, t, candidate_param)) {
                 continue;
@@ -925,7 +925,7 @@ namespace {
     }
 
     void cycleParam(ProgramState& s) {
-        const BlockType t = static_cast<BlockType>(s.selected_block_idx);
+        const auto t = static_cast<BlockType>(s.selected_block_idx);
         if (!blockHasParam(t)) {
             return;
         }
@@ -947,7 +947,7 @@ namespace {
             return true;
         }
         if (hardware::keyPressed(keyA)) {
-            const BlockType t = static_cast<BlockType>(s.selected_block_idx);
+            const auto t = static_cast<BlockType>(s.selected_block_idx);
             uint8_t param = blockHasParam(t) ? s.selected_param : 0;
             if (blockHasParam(t)) {
                 const uint8_t min_param = minParamForBlock(t);
