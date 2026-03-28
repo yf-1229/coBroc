@@ -4,7 +4,7 @@ set(CMAKE_CXX_STANDARD 17)
 
 cmake_minimum_required(VERSION 3.31)
 include(pico_sdk_import.cmake)
-project(urban)
+project(coBroc)
 pico_sdk_init()
 
 # add compiled files subdirectory
@@ -24,24 +24,25 @@ include_directories(./external/Infrared)
 
 
 # generate executable file
-add_executable(codeS
+add_executable( coBroc
         main.h
         main.cpp
+        external/ml/coBroc_regression_model.h
 
 )
 
 # enable usb output, disable uart output
-pico_enable_stdio_usb(codeS 1)
-pico_enable_stdio_uart(codeS 0)
+pico_enable_stdio_usb(coBroc 1)
+pico_enable_stdio_uart(coBroc 0)
 
 # create map/bin/hex/uf2 file etc.
-pico_add_extra_outputs(codeS)
+pico_add_extra_outputs(coBroc)
 
 include(pico_sdk_import.cmake)
 include(FetchContent)
 
 # Add the standard library to the build
-target_link_libraries(codeS PRIVATE
+target_link_libraries(coBroc PRIVATE
         pico_stdlib
         pico_aon_timer
         pico_multicore
@@ -56,6 +57,18 @@ target_link_libraries(codeS PRIVATE
 )
 
 # Add the standard include files to the build
-target_include_directories(codeS PRIVATE
+target_include_directories(coBroc PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}
+)
+
+target_compile_options(coBroc PRIVATE
+        $<$<CONFIG:Release>:-Os -ffunction-sections -fdata-sections>
+)
+
+target_link_options(coBroc PRIVATE
+        $<$<CONFIG:Release>:-Wl,--gc-sections>
+)
+
+target_compile_definitions(coBroc PRIVATE
+        $<$<CONFIG:Release>:NDEBUG>
 )

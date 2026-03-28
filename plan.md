@@ -137,3 +137,30 @@
 - `perf-ai-batch-core1` depends on `perf-ai-candidate-pruning`
 - `perf-release-profile` depends on `perf-dirty-redraw`
 - `perf-release-profile` depends on `perf-ai-batch-core1`
+
+## 実装結果（done）
+
+- `perf-dirty-redraw`:
+  - シーン描画を `clear_background` 制御に変更し、不要な全面 `Paint_Clear` を削減。
+  - `drawHeader` / `drawProgramList` の内部クリアを追加して、差分更新時の残像を抑制。
+- `perf-ai-candidate-pruning`:
+  - `pruneCandidatesForPrediction` を追加し、合法候補が多いターンでは最大20候補へ絞り込み。
+- `perf-ai-batch-core1`:
+  - `YdfWorkerCommand::PredictBatch` を導入し、core1推論をバッチ要求/応答化。
+  - `ydfPredictSuitabilityBatch` で一括予測結果を候補へ反映。
+- `perf-ui-string-cache`:
+  - `UiTextCache` を追加し、ヘッダー/行テキスト/結果サマリ/色選択文字列を状態変化時のみ再生成。
+- `perf-rng-fastpath`:
+  - 乱数分布を `g_dist_result_x/y` に分離し、結果円の初期座標生成の不要clampを削減。
+  - 画面境界は `RESULT_MIN_COORD`, `RESULT_MAX_X`, `RESULT_MAX_Y` に定数化。
+- `perf-release-profile`:
+  - `CMakeLists.txt` にRelease向け `-Os -ffunction-sections -fdata-sections`, `-Wl,--gc-sections`, `NDEBUG` を追加。
+  - `cmake-build-debug` / `cmake-build-release` の両方で `codeS` ビルド成功を確認。
+
+## 変更調整（2026-03-28）
+
+- ユーザー要望により、`perf-dirty-redraw` と `perf-ui-string-cache` 相当の変更を巻き戻し。
+  - `UiTextCache` および文字列キャッシュ関数群を削除。
+  - `draw*Scene` を従来の全面再描画（`Paint_Clear`）ベースへ戻し。
+- それ以外の軽量化（候補絞り込み、core1バッチ推論、RNG最適化、Release最適化フラグ）は維持。
+- 変更後も Debug/Release ビルド成功を確認。
