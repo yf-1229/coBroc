@@ -14,6 +14,8 @@ extern "C" {
 #include <cstring>
 #include <cstdlib>
 
+#include "external/ml/ydf.h"
+
 namespace hardware {
     bool keyPressed(uint8_t key) {
         return DEV_Digital_Read(key) == 0;
@@ -35,7 +37,7 @@ namespace hardware {
 namespace {
     constexpr uint8_t MAX_MOVES = 16;
     constexpr uint8_t MAX_HISTORY = 32;
-    constexpr uint8_t MAX_REPEAT_DEPTH = 4;
+    constexpr uint8_t MAX_NEST_DEPTH = 6;
 
     constexpr uint8_t LIST_VISIBLE = 9;
     constexpr uint16_t HEADER_TOP_Y = 2;
@@ -45,11 +47,20 @@ namespace {
     constexpr uint16_t LIST_ROW_H = 20;
     constexpr uint16_t INDENT_STEP = 16;
 
-    constexpr uint8_t MAX_PARAM = 7; // 0..7
     constexpr uint8_t COLOR_COUNT = 8;
-    constexpr uint8_t MAX_REPEAT = MAX_PARAM;
-    constexpr uint8_t BOARD_LIMIT = 8;
-    constexpr size_t AI_CANDIDATE_SLOTS = static_cast<size_t>((MAX_PARAM + 1) * 2 + MAX_REPEAT + 1);
+    constexpr uint8_t COLOR_PARAM_MIN = 1;
+    constexpr uint8_t COLOR_PARAM_MAX = COLOR_COUNT;   // 1..8
+    constexpr uint8_t MOVE_PARAM_MIN = 1;
+    constexpr uint8_t MOVE_PARAM_MAX = 19;             // cell index range 1..19
+    constexpr uint8_t MAX_REPEAT = 7;                  // 1..7
+    constexpr uint8_t RESULT_COLS = 5;
+    constexpr uint8_t RESULT_ROWS = 4;
+    constexpr uint8_t RESULT_CELL_COUNT = static_cast<uint8_t>(RESULT_COLS * RESULT_ROWS); // 20 cells (0..19)
+    constexpr size_t AI_CANDIDATE_SLOTS = static_cast<size_t>(
+        (MOVE_PARAM_MAX - MOVE_PARAM_MIN + 1) +
+        (COLOR_PARAM_MAX - COLOR_PARAM_MIN + 1) * 2 +
+        MAX_REPEAT + 1
+    );
 
     constexpr bool ENABLE_AI_LOG = true;
     constexpr const char* AI_LOG_PATH = "/tmp/maincpp_ai_ranking.csv";
@@ -71,6 +82,11 @@ namespace {
         Finished = 4
     };
 
+    enum class ActorType : uint8_t {
+        Player = 0,
+        AI = 1,
+    };
+
     constexpr std::array<UWORD, COLOR_COUNT> kPaintColors = {
         WHITE, RED, BRRED, YELLOW, GREEN, BLUE, MAGENTA, BLACK
     };
@@ -88,12 +104,51 @@ namespace {
         return kBlockNames[static_cast<uint8_t>(t)];
     }
 
-    constexpr uint8_t colorIndex(uint8_t idx) {
-        return static_cast<uint8_t>(idx % COLOR_COUNT);
+    constexpr uint8_t colorIndexFromParam(uint8_t param) {
+        if (param < COLOR_PARAM_MIN) {
+            return 0;
+        }
+        return static_cast<uint8_t>((param - COLOR_PARAM_MIN) % COLOR_COUNT);
     }
 
-    constexpr UWORD paintColorByIndex(uint8_t idx) {
-        return kPaintColors[colorIndex(idx)];
+    constexpr UWORD paintColorByParam(uint8_t param) {
+        return kPaintColors[colorIndexFromParam(param)];
+    }
+
+    constexpr uint8_t minParamForBlock(BlockType t) {
+        switch (t) {
+            case BlockType::Move:
+                return MOVE_PARAM_MIN;
+            case BlockType::Draw:
+            case BlockType::If:
+                return COLOR_PARAM_MIN;
+            case BlockType::Repeat:
+                return 1;
+            case BlockType::End:
+            case BlockType::None:
+            default:
+                return 0;
+        }
+    }
+
+    constexpr uint8_t maxParamForBlock(BlockType t) {
+        switch (t) {
+            case BlockType::Move:
+                return MOVE_PARAM_MAX;
+            case BlockType::Draw:
+            case BlockType::If:
+                return COLOR_PARAM_MAX;
+            case BlockType::Repeat:
+                return MAX_REPEAT;
+            case BlockType::End:
+            case BlockType::None:
+            default:
+                return 0;
+        }
+    }
+
+    constexpr bool blockHasParam(BlockType t) {
+        return t == BlockType::Move || t == BlockType::Draw || t == BlockType::If || t == BlockType::Repeat;
     }
 
     struct ProgramStep {
@@ -105,6 +160,7 @@ namespace {
     struct RuntimeState {
         uint8_t x = 0;
         uint8_t y = 0;
+        uint8_t anchor_cell = 0;
         uint8_t draw_color = 0;
     };
 
@@ -117,10 +173,7 @@ namespace {
         BlockType type = BlockType::None;
         uint8_t param = 0;
         bool legal = false;
-        uint16_t transition_score = 0;
-        uint16_t structure_score = 0;
-        uint16_t progress_score = 0;
-        uint16_t score = 0;
+        float score = -1.0f;
     };
 
     struct ProgramState {
@@ -135,10 +188,10 @@ namespace {
         uint8_t move_count = 0;
         uint8_t selected_line = 0;
         uint8_t scroll_top = 0;
-        uint8_t selected_block_idx = static_cast<uint8_t>(BlockType::Draw);
-        uint8_t selected_param = 0;
+        uint8_t selected_block_idx = static_cast<uint8_t>(BlockType::Move);
+        uint8_t selected_param = MOVE_PARAM_MIN;
         uint8_t syntax_depth = 0;
-        uint8_t run_input_color = 0;
+        uint8_t run_input_color = COLOR_PARAM_MIN;
 
         TurnState turn = TurnState::PlayerTurn;
         bool compiled_ok = false;
@@ -157,7 +210,7 @@ namespace {
         }
         std::fprintf(
             fp,
-            "query_id,game_id,turn,candidate_type,candidate_param,depth,remaining_moves,last_type,freq_move,freq_draw,freq_if,freq_repeat,freq_end,transition_prev_to_candidate,legal,chosen,label\n"
+            "query_id,game_id,turn,candidate_type,candidate_param,depth,remaining_moves,last_type,freq_move,freq_draw,freq_if,freq_repeat,freq_end,transition_prev_to_candidate,legal,actor,chosen,label\n"
         );
         std::fclose(fp);
         g_ai_log_header_written = true;
@@ -169,6 +222,7 @@ namespace {
         const AICandidate& c,
         uint8_t last_type,
         uint16_t transition_prev_to_candidate,
+        ActorType actor,
         bool chosen,
         uint8_t label
     ) {
@@ -183,7 +237,7 @@ namespace {
         const uint32_t query_id = static_cast<uint32_t>(s.game_id) * 100u + turn_index;
         std::fprintf(
             fp,
-            "%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
+            "%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
             query_id,
             s.game_id,
             turn_index,
@@ -192,13 +246,14 @@ namespace {
             s.syntax_depth,
             static_cast<uint8_t>(MAX_MOVES - s.move_count),
             last_type,
-            0,
+            s.block_frequency[static_cast<uint8_t>(BlockType::Move)],
             s.block_frequency[static_cast<uint8_t>(BlockType::Draw)],
             s.block_frequency[static_cast<uint8_t>(BlockType::If)],
             s.block_frequency[static_cast<uint8_t>(BlockType::Repeat)],
             s.block_frequency[static_cast<uint8_t>(BlockType::End)],
             transition_prev_to_candidate,
             c.legal ? 1 : 0,
+            static_cast<uint8_t>(actor),
             chosen ? 1 : 0,
             label
         );
@@ -209,19 +264,23 @@ namespace {
         const uint16_t next_game = static_cast<uint16_t>(s.game_id + 1);
         s = ProgramState{};
         s.game_id = next_game;
-        s.selected_param = 0;
-        s.selected_block_idx = static_cast<uint8_t>(BlockType::Draw);
+        s.selected_block_idx = static_cast<uint8_t>(BlockType::Move);
+        s.selected_param = minParamForBlock(BlockType::Move);
+        s.run_input_color = COLOR_PARAM_MIN;
     }
 
     bool isPlayableBlock(BlockType t) {
-        return t == BlockType::Draw || t == BlockType::If || t == BlockType::Repeat || t == BlockType::End;
+        return t == BlockType::Move || t == BlockType::Draw || t == BlockType::If || t == BlockType::Repeat || t == BlockType::End;
     }
 
     bool blockAllowedByDepth(const ProgramState& s, BlockType t) {
         if (t == BlockType::End) {
             return s.syntax_depth > 0;
         }
-        if ((t == BlockType::If || t == BlockType::Repeat) && s.syntax_depth >= MAX_REPEAT_DEPTH) {
+        if ((t == BlockType::Move || t == BlockType::If || t == BlockType::Repeat) && s.syntax_depth >= MAX_NEST_DEPTH) {
+            return false;
+        }
+        if (s.syntax_depth > 0 && t == BlockType::Move) {
             return false;
         }
         return true;
@@ -231,10 +290,10 @@ namespace {
         if (!isPlayableBlock(t) || !blockAllowedByDepth(s, t)) {
             return false;
         }
-        if (t == BlockType::Draw && param > MAX_PARAM) {
+        if (t == BlockType::Move && (param < MOVE_PARAM_MIN || param > MOVE_PARAM_MAX)) {
             return false;
         }
-        if (t == BlockType::If && param > MAX_PARAM) {
+        if ((t == BlockType::Draw || t == BlockType::If) && (param < COLOR_PARAM_MIN || param > COLOR_PARAM_MAX)) {
             return false;
         }
         if (t == BlockType::Repeat && (param < 1 || param > MAX_REPEAT)) {
@@ -282,8 +341,8 @@ namespace {
                 continue;
             }
             s.view_depths[i] = depth;
-            if (t == BlockType::If || t == BlockType::Repeat) {
-                depth = static_cast<uint8_t>(std::min<uint8_t>(MAX_REPEAT_DEPTH, depth + 1));
+            if (t == BlockType::Move || t == BlockType::If || t == BlockType::Repeat) {
+                depth = static_cast<uint8_t>(std::min<uint8_t>(MAX_NEST_DEPTH, depth + 1));
             }
         }
     }
@@ -299,7 +358,7 @@ namespace {
         s.move_count++;
         s.selected_line = static_cast<uint8_t>(s.move_count - 1);
 
-        if (t == BlockType::If || t == BlockType::Repeat) {
+        if (t == BlockType::Move || t == BlockType::If || t == BlockType::Repeat) {
             s.syntax_depth++;
         } else if (t == BlockType::End && s.syntax_depth > 0) {
             s.syntax_depth--;
@@ -311,60 +370,52 @@ namespace {
         return true;
     }
 
-    uint16_t transitionScore(const ProgramState& s, BlockType t) {
-        if (s.history_size == 0) {
-            return 1;
-        }
-        const uint8_t prev = s.history[(s.history_size - 1) % MAX_HISTORY];
-        const uint8_t next = static_cast<uint8_t>(t);
-        return static_cast<uint16_t>(1 + s.transitions[prev][next] * 2 + s.block_frequency[next]);
+    blockode::ydf::CandidateFeatures makeYdfFeatures(const ProgramState& s, const AICandidate& c, ActorType actor) {
+        blockode::ydf::CandidateFeatures f{};
+        f.game_id = s.game_id;
+        f.turn = static_cast<uint32_t>(s.move_count + 1);
+        f.candidate_type = static_cast<uint32_t>(c.type);
+        f.candidate_param = c.param;
+        f.depth = s.syntax_depth;
+        f.remaining_moves = static_cast<uint32_t>(MAX_MOVES - s.move_count);
+        f.last_type = s.history_size == 0 ? 0 : s.history[(s.history_size - 1) % MAX_HISTORY];
+        f.freq_move = s.block_frequency[static_cast<uint8_t>(BlockType::Move)];
+        f.freq_draw = s.block_frequency[static_cast<uint8_t>(BlockType::Draw)];
+        f.freq_if = s.block_frequency[static_cast<uint8_t>(BlockType::If)];
+        f.freq_repeat = s.block_frequency[static_cast<uint8_t>(BlockType::Repeat)];
+        f.freq_end = s.block_frequency[static_cast<uint8_t>(BlockType::End)];
+        f.transition_prev_to_candidate =
+            s.history_size == 0 ? 0 : s.transitions[f.last_type][static_cast<uint8_t>(c.type)];
+        f.legal = c.legal ? 1u : 0u;
+        f.actor = actor == ActorType::AI ? 1u : 0u;
+        return f;
     }
 
-    uint16_t structureScore(const ProgramState& s, BlockType t, uint8_t param) {
-        uint16_t score = 1;
-        if (t == BlockType::End) {
-            score += static_cast<uint16_t>(s.syntax_depth > 0 ? 6 : 0);
+    float ydfPredictScore(const ProgramState& s, const AICandidate& c, ActorType actor) {
+        const auto features = makeYdfFeatures(s, c, actor);
+        const auto pred = blockode::ydf::Model::Instance().Predict(features);
+        if (!pred.ok) {
+            return -1.0f;
         }
-        if (t == BlockType::Repeat) {
-            if (s.syntax_depth < MAX_REPEAT_DEPTH - 1) {
-                score += 4;
-            }
-            score += static_cast<uint16_t>(param <= 3 ? 2 : 0);
-        }
-        if (t == BlockType::If) {
-            score += static_cast<uint16_t>(param >= 2 && param <= 5 ? 3 : 1);
-        }
-        if (t == BlockType::Draw) {
-            score += 2;
-        }
-        return score;
-    }
-
-    uint16_t progressScore(const ProgramState& s, BlockType t) {
-        const uint8_t remaining = static_cast<uint8_t>(MAX_MOVES - s.move_count);
-        uint16_t score = 1;
-        if (remaining <= 2 && t == BlockType::End) {
-            score += 5;
-        }
-        if (remaining >= 6 && (t == BlockType::If || t == BlockType::Repeat)) {
-            score += 2;
-        }
-        return score;
+        return pred.ranking_score;
     }
 
     std::array<AICandidate, AI_CANDIDATE_SLOTS> buildCandidates(const ProgramState& s, uint8_t& out_count) {
         std::array<AICandidate, AI_CANDIDATE_SLOTS> cands{};
         out_count = 0;
-        const std::array<BlockType, 4> blocks = {
-            BlockType::Draw, BlockType::If, BlockType::Repeat, BlockType::End
+        const std::array<BlockType, 5> blocks = {
+            BlockType::Move, BlockType::Draw, BlockType::If, BlockType::Repeat, BlockType::End
         };
 
         for (BlockType t : blocks) {
             uint8_t min_param = 0;
             uint8_t max_param = 0;
-            if (t == BlockType::Draw || t == BlockType::If) {
-                min_param = 0;
-                max_param = MAX_PARAM;
+            if (t == BlockType::Move) {
+                min_param = MOVE_PARAM_MIN;
+                max_param = MOVE_PARAM_MAX;
+            } else if (t == BlockType::Draw || t == BlockType::If) {
+                min_param = COLOR_PARAM_MIN;
+                max_param = COLOR_PARAM_MAX;
             } else if (t == BlockType::Repeat) {
                 min_param = 1;
                 max_param = MAX_REPEAT;
@@ -381,10 +432,7 @@ namespace {
                 c.type = t;
                 c.param = p;
                 c.legal = isLegalCandidate(s, t, p);
-                c.transition_score = transitionScore(s, t);
-                c.structure_score = structureScore(s, t, p);
-                c.progress_score = progressScore(s, t);
-                c.score = c.legal ? static_cast<uint16_t>(c.transition_score + c.structure_score + c.progress_score) : 0;
+                c.score = c.legal ? ydfPredictScore(s, c, ActorType::AI) : -1.0f;
                 cands[out_count++] = c;
             }
         }
@@ -405,7 +453,24 @@ namespace {
         return chosen != 255;
     }
 
-    void logCandidates(const ProgramState& s, const std::array<AICandidate, AI_CANDIDATE_SLOTS>& cands, uint8_t count, uint8_t chosen_index) {
+    bool findCandidateByAction(
+        const std::array<AICandidate, AI_CANDIDATE_SLOTS>& cands,
+        uint8_t count,
+        BlockType type,
+        uint8_t param,
+        uint8_t& out_index
+    ) {
+        out_index = 255;
+        for (uint8_t i = 0; i < count; i++) {
+            if (cands[i].type == type && cands[i].param == param) {
+                out_index = i;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void logCandidates(const ProgramState& s, const std::array<AICandidate, AI_CANDIDATE_SLOTS>& cands, uint8_t count, uint8_t chosen_index, ActorType actor) {
         if (!ENABLE_AI_LOG) {
             return;
         }
@@ -414,10 +479,19 @@ namespace {
 
         for (uint8_t i = 0; i < count; i++) {
             const auto& c = cands[i];
-            const uint16_t trans = s.history_size == 0 ? 0 : s.transitions[last_type][static_cast<uint8_t>(c.type)];
+            const auto features = makeYdfFeatures(s, c, actor);
             const bool chosen = (i == chosen_index);
-            const uint8_t label = chosen ? 3 : (c.legal && c.score + 2 >= cands[chosen_index].score ? 2 : 0);
-            appendAiLogRow(s, turn_index, c, last_type, trans, chosen, label);
+            const uint8_t label = chosen ? 3 : (c.legal && c.score + 0.1f >= cands[chosen_index].score ? 2 : 0);
+            appendAiLogRow(
+                s,
+                turn_index,
+                c,
+                static_cast<uint8_t>(features.last_type),
+                static_cast<uint16_t>(features.transition_prev_to_candidate),
+                actor,
+                chosen,
+                label
+            );
         }
     }
 
@@ -429,7 +503,7 @@ namespace {
             s.turn = TurnState::RunProgram;
             return;
         }
-        logCandidates(s, cands, count, chosen);
+        logCandidates(s, cands, count, chosen, ActorType::AI);
         if (!addStepToProgram(s, cands[chosen].type, cands[chosen].param, true)) {
             s.turn = TurnState::RunProgram;
             return;
@@ -441,119 +515,10 @@ namespace {
         }
     }
 
-    void finalizeSyntax(ProgramState& s) {
-        while (s.syntax_depth > 0 && s.move_count < MAX_MOVES) {
-            addStepToProgram(s, BlockType::End, 0, true);
-        }
-    }
-
-    bool compileAndRun(ProgramState& s) {
-        s.compiled_ok = false;
-        s.runtime = RuntimeState{};
-        s.runtime.draw_color = colorIndex(s.run_input_color);
-        finalizeSyntax(s);
-
-        std::array<int8_t, MAX_MOVES> if_end{};
-        std::array<int8_t, MAX_MOVES> repeat_end{};
-        std::array<int8_t, MAX_MOVES> end_repeat_start{};
-        if_end.fill(-1);
-        repeat_end.fill(-1);
-        end_repeat_start.fill(-1);
-
-        std::array<uint8_t, MAX_MOVES> stack{};
-        uint8_t top = 0;
-        for (uint8_t pc = 0; pc < s.move_count; pc++) {
-            const BlockType t = s.program[pc].type;
-            if (t == BlockType::If || t == BlockType::Repeat) {
-                if (top >= MAX_MOVES) {
-                    return false;
-                }
-                stack[top++] = pc;
-            } else if (t == BlockType::End) {
-                if (top == 0) {
-                    return false;
-                }
-                const uint8_t start = stack[--top];
-                if (s.program[start].type == BlockType::If) {
-                    if_end[start] = static_cast<int8_t>(pc);
-                } else {
-                    repeat_end[start] = static_cast<int8_t>(pc);
-                    end_repeat_start[pc] = static_cast<int8_t>(start);
-                }
-            }
-        }
-        if (top != 0) {
-            return false;
-        }
-
-        std::array<LoopFrame, MAX_REPEAT_DEPTH> loops{};
-        uint8_t loop_top = 0;
-        uint8_t pc = 0;
-
-        while (pc < s.move_count) {
-            const ProgramStep step = s.program[pc];
-            switch (step.type) {
-                case BlockType::Draw:
-                    s.runtime.draw_color = colorIndex(step.param);
-                    pc++;
-                    break;
-                case BlockType::If: {
-                    const bool cond = (colorIndex(s.run_input_color) == colorIndex(step.param));
-                    if (!cond) {
-                        const int8_t jump = if_end[pc];
-                        if (jump < 0) {
-                            return false;
-                        }
-                        pc = static_cast<uint8_t>(jump + 1);
-                    } else {
-                        pc++;
-                    }
-                    break;
-                }
-                case BlockType::Repeat: {
-                    if (repeat_end[pc] < 0 || loop_top >= MAX_REPEAT_DEPTH) {
-                        return false;
-                    }
-                    loops[loop_top++] = {pc, step.param};
-                    pc++;
-                    break;
-                }
-                case BlockType::End: {
-                    const int8_t start = end_repeat_start[pc];
-                    if (start < 0) {
-                        pc++;
-                        break;
-                    }
-                    if (loop_top == 0) {
-                        return false;
-                    }
-                    auto& frame = loops[loop_top - 1];
-                    if (frame.start_pc != static_cast<uint8_t>(start)) {
-                        return false;
-                    }
-                    if (frame.remaining > 1) {
-                        frame.remaining--;
-                        pc = static_cast<uint8_t>(frame.start_pc + 1);
-                    } else {
-                        loop_top--;
-                        pc++;
-                    }
-                    break;
-                }
-                default:
-                    return false;
-            }
-        }
-
-        s.compiled_ok = true;
-        return true;
-    }
-
     void drawHeader(const ProgramState& s) {
-        const BlockType t = static_cast<BlockType>(s.selected_block_idx);
-        const uint8_t shown_param = (t == BlockType::Repeat && s.selected_param == 0) ? 1 : s.selected_param;
-        const uint8_t param_max = (t == BlockType::Repeat) ? MAX_REPEAT : MAX_PARAM;
-        const uint8_t legal_param = (t == BlockType::End) ? 0 : shown_param;
+        const auto t = static_cast<BlockType>(s.selected_block_idx);
+        const uint8_t shown_param = blockHasParam(t) ? std::max<uint8_t>(minParamForBlock(t), s.selected_param) : 0;
+        const uint8_t param_max = maxParamForBlock(t);
 
         Paint_DrawRectangle(4, HEADER_TOP_Y, 236, HEADER_TOP_Y + HEADER_HEIGHT, BLUE, DOT_PIXEL_1X1, DRAW_FILL_EMPTY);
 
@@ -571,11 +536,17 @@ namespace {
         Paint_DrawString_EN(8, HEADER_TOP_Y + 4, line1, &Font12, BLACK, WHITE);
 
         char line2[96];
-        std::snprintf(line2, sizeof(line2), "A:add B:type X:param Y:run  depth:%u", s.syntax_depth);
+        std::snprintf(
+            line2,
+            sizeof(line2),
+            "A:add B:type X:param Y:run depth:%u ydf:%s",
+            s.syntax_depth,
+            blockode::ydf::kModelAvailable ? "on" : "off"
+        );
         Paint_DrawString_EN(8, HEADER_TOP_Y + 20, line2, &Font12, BLACK, WHITE);
 
         if (t == BlockType::Draw || t == BlockType::If) {
-            const UWORD dot_color = paintColorByIndex(shown_param);
+            const UWORD dot_color = paintColorByParam(shown_param);
             Paint_DrawRectangle(206, HEADER_TOP_Y + 10, 230, HEADER_TOP_Y + 34, BLACK, DOT_PIXEL_1X1, DRAW_FILL_EMPTY);
             Paint_DrawCircle(218, HEADER_TOP_Y + 22, 8, dot_color, DOT_PIXEL_1X1, DRAW_FILL_FULL);
         }
@@ -611,7 +582,7 @@ namespace {
             Paint_DrawString_EN(indent_x, y + 2, line, &Font12, BLACK, WHITE);
 
             if (step.type == BlockType::Draw || step.type == BlockType::If) {
-                const UWORD dot_color = paintColorByIndex(step.param);
+                const UWORD dot_color = paintColorByParam(step.param);
                 const uint16_t swatch_left = 210;
                 const uint16_t swatch_top = static_cast<uint16_t>(y + 2);
                 const uint16_t dot_x = 220;
@@ -622,28 +593,183 @@ namespace {
         }
     }
 
-    void drawRunPreview(const ProgramState& s) {
-        Paint_Clear(WHITE);
-        Paint_DrawString_EN(4, 4, "Run Preview", &Font16, BLACK, WHITE);
-        const uint16_t origin_x = 20;
-        const uint16_t origin_y = 40;
-        const uint16_t cell = 20;
+    // --- Run ---
+    void finalizeSyntax(ProgramState& s) {
+        while (s.syntax_depth > 0 && s.move_count < MAX_MOVES) {
+            addStepToProgram(s, BlockType::End, 0, true);
+        }
+    }
 
-        for (uint8_t y = 0; y < BOARD_LIMIT; y++) {
-            for (uint8_t x = 0; x < BOARD_LIMIT; x++) {
-                const uint16_t x0 = static_cast<uint16_t>(origin_x + x * cell);
-                const uint16_t y0 = static_cast<uint16_t>(origin_y + y * cell);
-                Paint_DrawRectangle(x0, y0, x0 + cell - 2, y0 + cell - 2, GRAY, DOT_PIXEL_1X1, DRAW_FILL_EMPTY);
+    bool compileAndRun(ProgramState& s) {
+        s.compiled_ok = false;
+        s.runtime = RuntimeState{};
+        s.runtime.draw_color = colorIndexFromParam(s.run_input_color);
+        finalizeSyntax(s);
+
+        std::array<int8_t, MAX_MOVES> block_end{};
+        std::array<int8_t, MAX_MOVES> end_start{};
+        block_end.fill(-1);
+        end_start.fill(-1);
+
+        std::array<uint8_t, MAX_MOVES> stack{};
+        uint8_t top = 0;
+        for (uint8_t pc = 0; pc < s.move_count; pc++) {
+            const BlockType t = s.program[pc].type;
+            if (t == BlockType::Move || t == BlockType::If || t == BlockType::Repeat) {
+                if (top >= MAX_MOVES) {
+                    return false;
+                }
+                stack[top++] = pc;
+            } else if (t == BlockType::End) {
+                if (top == 0) {
+                    return false;
+                }
+                const uint8_t start = stack[--top];
+                block_end[start] = static_cast<int8_t>(pc);
+                end_start[pc] = static_cast<int8_t>(start);
+            }
+        }
+        if (top != 0) {
+            return false;
+        }
+
+        std::array<LoopFrame, MAX_NEST_DEPTH> loops{};
+        uint8_t loop_top = 0;
+        uint8_t pc = 0;
+        std::array<uint8_t, MAX_NEST_DEPTH> move_anchor_stack{};
+        uint8_t move_anchor_top = 0;
+
+        while (pc < s.move_count) {
+            const ProgramStep step = s.program[pc];
+            switch (step.type) {
+                case BlockType::Move: {
+                    if (block_end[pc] < 0 || move_anchor_top >= MAX_NEST_DEPTH) {
+                        return false;
+                    }
+                    move_anchor_stack[move_anchor_top++] = static_cast<uint8_t>(step.param - MOVE_PARAM_MIN);
+                    s.runtime.anchor_cell = static_cast<uint8_t>(step.param - MOVE_PARAM_MIN);
+                    s.runtime.x = static_cast<uint8_t>(s.runtime.anchor_cell % RESULT_COLS);
+                    s.runtime.y = static_cast<uint8_t>(s.runtime.anchor_cell / RESULT_COLS);
+                    pc++;
+                    break;
+                }
+                case BlockType::Draw:
+                    s.runtime.draw_color = colorIndexFromParam(step.param);
+                    if (move_anchor_top > 0) {
+                        s.runtime.anchor_cell = move_anchor_stack[move_anchor_top - 1];
+                    } else {
+                        s.runtime.anchor_cell = 0;
+                    }
+                    s.runtime.x = static_cast<uint8_t>(s.runtime.anchor_cell % RESULT_COLS);
+                    s.runtime.y = static_cast<uint8_t>(s.runtime.anchor_cell / RESULT_COLS);
+                    pc++;
+                    break;
+                case BlockType::If: {
+                    if (block_end[pc] < 0) {
+                        return false;
+                    }
+                    const bool cond = (colorIndexFromParam(s.run_input_color) == colorIndexFromParam(step.param));
+                    if (!cond) {
+                        pc = static_cast<uint8_t>(block_end[pc] + 1);
+                    } else {
+                        pc++;
+                    }
+                    break;
+                }
+                case BlockType::Repeat: {
+                    if (block_end[pc] < 0 || loop_top >= MAX_NEST_DEPTH) {
+                        return false;
+                    }
+                    loops[loop_top++] = {pc, step.param};
+                    pc++;
+                    break;
+                }
+                case BlockType::End: {
+                    const int8_t start = end_start[pc];
+                    if (start < 0) {
+                        return false;
+                    }
+                    const BlockType open_type = s.program[static_cast<uint8_t>(start)].type;
+                    if (open_type == BlockType::Repeat) {
+                        if (loop_top == 0) {
+                            return false;
+                        }
+                        auto& frame = loops[loop_top - 1];
+                        if (frame.start_pc != static_cast<uint8_t>(start)) {
+                            return false;
+                        }
+                        if (frame.remaining > 1) {
+                            frame.remaining--;
+                            pc = static_cast<uint8_t>(frame.start_pc + 1);
+                        } else {
+                            loop_top--;
+                            pc++;
+                        }
+                        break;
+                    }
+                    if (open_type == BlockType::Move) {
+                        if (move_anchor_top == 0) {
+                            return false;
+                        }
+                        move_anchor_top--;
+                        if (move_anchor_top > 0) {
+                            s.runtime.anchor_cell = move_anchor_stack[move_anchor_top - 1];
+                        } else {
+                            s.runtime.anchor_cell = 0;
+                        }
+                        s.runtime.x = static_cast<uint8_t>(s.runtime.anchor_cell % RESULT_COLS);
+                        s.runtime.y = static_cast<uint8_t>(s.runtime.anchor_cell / RESULT_COLS);
+                        pc++;
+                        break;
+                    }
+                    if (open_type == BlockType::If) {
+                        pc++;
+                        break;
+                    }
+                    return false;
+                }
+                default:
+                    return false;
             }
         }
 
-        const uint16_t px = static_cast<uint16_t>(origin_x + s.runtime.x * cell + (cell / 2));
-        const uint16_t py = static_cast<uint16_t>(origin_y + s.runtime.y * cell + (cell / 2));
-        Paint_DrawCircle(px, py, 6, paintColorByIndex(s.runtime.draw_color), DOT_PIXEL_1X1, DRAW_FILL_FULL);
-        Paint_DrawCircle(202, 22, 8, paintColorByIndex(s.runtime.draw_color), DOT_PIXEL_1X1, DRAW_FILL_FULL);
+        s.compiled_ok = true;
+        return true;
+    }
+
+    void drawRunPreview(const ProgramState& s) {
+        Paint_Clear(WHITE);
+        Paint_DrawString_EN(4, 4, "Run Preview", &Font16, BLACK, WHITE);
+        constexpr uint16_t origin_x = 20;
+        constexpr uint16_t origin_y = 40;
+        constexpr uint16_t cell = 20;
+
+        for (uint8_t y = 0; y < RESULT_ROWS; y++) {
+            for (uint8_t x = 0; x < RESULT_COLS; x++) {
+                const auto x0 = static_cast<uint16_t>(origin_x + x * cell);
+                const auto y0 = static_cast<uint16_t>(origin_y + y * cell);
+                Paint_DrawRectangle(x0, y0, x0 + cell - 2, y0 + cell - 2, GRAY, DOT_PIXEL_1X1, DRAW_FILL_EMPTY);
+                const uint8_t idx = static_cast<uint8_t>(y * RESULT_COLS + x);
+                char id[4];
+                std::snprintf(id, sizeof(id), "%u", idx);
+                Paint_DrawString_EN(
+                    static_cast<UWORD>(x0 + 3),
+                    static_cast<UWORD>(y0 + 3),
+                    id,
+                    &Font12,
+                    BLACK,
+                    WHITE
+                );
+            }
+        }
+
+        const auto px = static_cast<uint16_t>(origin_x + s.runtime.x * cell + (cell / 2));
+        const auto py = static_cast<uint16_t>(origin_y + s.runtime.y * cell + (cell / 2));
+        Paint_DrawCircle(px, py, 6, kPaintColors[s.runtime.draw_color], DOT_PIXEL_1X1, DRAW_FILL_FULL);
+        Paint_DrawCircle(202, 22, 8, kPaintColors[s.runtime.draw_color], DOT_PIXEL_1X1, DRAW_FILL_FULL);
 
         char line[64];
-        std::snprintf(line, sizeof(line), "x:%u y:%u color:%u", s.runtime.x, s.runtime.y, s.runtime.draw_color);
+        std::snprintf(line, sizeof(line), "cell:%u x:%u y:%u color:%u", s.runtime.anchor_cell, s.runtime.x, s.runtime.y, s.runtime.draw_color);
         Paint_DrawString_EN(4, 220, line, &Font12, BLACK, WHITE);
     }
 
@@ -660,18 +786,28 @@ namespace {
     void cycleBlockType(ProgramState& s) {
         s.selected_block_idx++;
         if (s.selected_block_idx > static_cast<uint8_t>(BlockType::End)) {
-            s.selected_block_idx = static_cast<uint8_t>(BlockType::Draw);
+            s.selected_block_idx = static_cast<uint8_t>(BlockType::Move);
+        }
+        const auto t = static_cast<BlockType>(s.selected_block_idx);
+        const uint8_t min_param = minParamForBlock(t);
+        const uint8_t max_param = maxParamForBlock(t);
+        if (blockHasParam(t) && (s.selected_param < min_param || s.selected_param > max_param)) {
+            s.selected_param = min_param;
+        }
+        if (!blockHasParam(t)) {
+            s.selected_param = 0;
         }
     }
 
     void cycleParam(ProgramState& s) {
         const BlockType t = static_cast<BlockType>(s.selected_block_idx);
-        if (t == BlockType::Repeat) {
-            const uint8_t base = s.selected_param == 0 ? 1 : s.selected_param;
-            s.selected_param = static_cast<uint8_t>((base % MAX_REPEAT) + 1); // 1..MAX_REPEAT
-        } else {
-            s.selected_param = static_cast<uint8_t>((s.selected_param + 1) % (MAX_PARAM + 1));
+        if (!blockHasParam(t)) {
+            return;
         }
+        const uint8_t min_param = minParamForBlock(t);
+        const uint8_t max_param = maxParamForBlock(t);
+        const uint8_t base = s.selected_param < min_param ? min_param : s.selected_param;
+        s.selected_param = base >= max_param ? min_param : static_cast<uint8_t>(base + 1);
     }
 
     bool handlePlayerInput(ProgramState& s) {
@@ -687,12 +823,26 @@ namespace {
         }
         if (hardware::keyPressed(keyA)) {
             const BlockType t = static_cast<BlockType>(s.selected_block_idx);
-            uint8_t param = s.selected_param;
-            if (t == BlockType::End) {
-                param = 0;
-            } else if (t == BlockType::Repeat) {
-                const uint8_t base = param == 0 ? 1 : param;
-                param = static_cast<uint8_t>(((base - 1) % MAX_REPEAT) + 1);
+            uint8_t param = blockHasParam(t) ? s.selected_param : 0;
+            if (blockHasParam(t)) {
+                const uint8_t min_param = minParamForBlock(t);
+                const uint8_t max_param = maxParamForBlock(t);
+                if (param < min_param || param > max_param) {
+                    param = min_param;
+                }
+            }
+            uint8_t count = 0;
+            auto cands = buildCandidates(s, count);
+            for (uint8_t i = 0; i < count; i++) {
+                if (!cands[i].legal) {
+                    continue;
+                }
+                cands[i].score = ydfPredictScore(s, cands[i], ActorType::Player);
+            }
+            uint8_t chosen_idx = 255;
+            uint8_t best_idx = 255;
+            if (findCandidateByAction(cands, count, t, param, chosen_idx) && chooseBestCandidate(cands, count, best_idx)) {
+                logCandidates(s, cands, count, chosen_idx, ActorType::Player);
             }
             if (addStepToProgram(s, t, param, false)) {
                 s.turn = TurnState::AITurn;
@@ -710,7 +860,7 @@ namespace {
 
     bool handleColorSelectInput(ProgramState& s) {
         if (hardware::keyPressed(keyX)) {
-            s.run_input_color = static_cast<uint8_t>((s.run_input_color + 1) % COLOR_COUNT);
+            s.run_input_color = s.run_input_color >= COLOR_PARAM_MAX ? COLOR_PARAM_MIN : static_cast<uint8_t>(s.run_input_color + 1);
             sleep_ms(140);
             return true;
         }
@@ -733,12 +883,12 @@ namespace {
         Paint_DrawString_EN(8, 34, "X:next color  Y:start  A:back", &Font12, BLACK, WHITE);
         Paint_DrawString_EN(8, 56, "IF compares this color", &Font12, BLACK, WHITE);
 
-        const UWORD c = paintColorByIndex(s.run_input_color);
+        const UWORD c = paintColorByParam(s.run_input_color);
         Paint_DrawRectangle(84, 86, 156, 158, BLACK, DOT_PIXEL_1X1, DRAW_FILL_EMPTY);
         Paint_DrawCircle(120, 122, 24, c, DOT_PIXEL_1X1, DRAW_FILL_FULL);
 
         char line[64];
-        std::snprintf(line, sizeof(line), "selected color idx: %u", s.run_input_color);
+        std::snprintf(line, sizeof(line), "selected color param: %u", s.run_input_color);
         Paint_DrawString_EN(8, 176, line, &Font12, BLACK, WHITE);
     }
 }
