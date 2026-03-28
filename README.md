@@ -2,10 +2,10 @@
 
 ## 「coBroc」はコードブロックを使い、AIと将棋やチェスのように1手ずつ交代して設置してコードの完成を目指していくゲームです。完成したコードは実行することができます。
 
-![Coding](/assets/image/code.jpg)
-![Running](/assets/image/run.jpg)
+![Coding](/assets/code.jpg)
+![Running](/assets/run.jpg)
 
 > [!IMPORTANT]
-> ** 短時間×ブロックプログラミング×低リソース **
+> 短時間×ブロックプログラミング×低リソース 
 > この3つを重点に、プログラミングに触れるハードルをさらに下げコーディングの一般化とSTEM教育に貢献します。
 
