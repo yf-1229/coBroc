@@ -1,7 +1,7 @@
 #pragma once
 
-#ifndef CODES_MAIN_H
-#define CODES_MAIN_H
+#ifndef COBROC_MAIN_H
+#define COBROC_MAIN_H
 
 #include "pico/stdlib.h"
 #include <cstdint>
@@ -11,14 +11,14 @@
 #include <cstring>
 #include <cstdlib>
 
-#if __has_include("external/ml/blockode_regression_model.h")
-#define BLOCKODE_YDF_STANDALONE_AVAILABLE 1
-#include "external/ml/blockode_regression_model.h"
+#if __has_include("external/ml/coBroc_regression_model.h")
+#define COBROC_YDF_STANDALONE_AVAILABLE 1
+#include "external/ml/coBroc_regression_model.h"
 #else
-#define BLOCKODE_YDF_STANDALONE_AVAILABLE 0
+#define COBROC_YDF_STANDALONE_AVAILABLE 0
 #endif
 
-namespace blockode::ydf {
+namespace coBroc::ydf {
     struct CandidateFeatures {
         uint32_t game_id = 0;
         uint32_t turn = 0;
@@ -57,9 +57,9 @@ namespace blockode::ydf {
             return Prediction{suitability, true};
         }
 
-#if BLOCKODE_YDF_STANDALONE_AVAILABLE
+#if COBROC_YDF_STANDALONE_AVAILABLE
         inline Prediction PredictStandalone(const CandidateFeatures& f) {
-            blockode_regression_model::Instance in{};
+            coBroc_regression_model::Instance in{};
             in.game_id = static_cast<int32_t>(f.game_id);
             in.turn = static_cast<int32_t>(f.turn);
             in.candidate_type = static_cast<int32_t>(f.candidate_type);
@@ -76,7 +76,7 @@ namespace blockode::ydf {
             in.legal = static_cast<int32_t>(f.legal);
             in.actor = static_cast<int32_t>(f.actor);
             in.feedback_penalty = static_cast<int32_t>(f.feedback_penalty);
-            return Prediction{blockode_regression_model::Predict(in), true};
+            return Prediction{coBroc_regression_model::Predict(in), true};
         }
 #endif
     }
@@ -89,7 +89,7 @@ namespace blockode::ydf {
         }
 
         static Prediction Predict(const CandidateFeatures& f) {
-#if BLOCKODE_YDF_STANDALONE_AVAILABLE
+#if COBROC_YDF_STANDALONE_AVAILABLE
             return detail::PredictStandalone(f);
 #endif
             return detail::PredictFallback(f);
@@ -100,7 +100,7 @@ namespace blockode::ydf {
     };
 
     constexpr bool kModelAvailable = true;
-#if BLOCKODE_YDF_STANDALONE_AVAILABLE
+#if COBROC_YDF_STANDALONE_AVAILABLE
     constexpr const char* kBackendName = "standalone";
 #else
     constexpr const char* kBackendName = "stub";
@@ -120,4 +120,4 @@ namespace blockode::ydf {
 constexpr uint16_t LCD_REFRESH_DELAY_MS = 50;
 int LCD();
 
-#endif // CODES_MAIN_H
+#endif // COBROC_MAIN_H

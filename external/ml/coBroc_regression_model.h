@@ -1,11 +1,11 @@
-#ifndef YDF_MODEL_BLOCKODE_REGRESSION_MODEL_H_
-#define YDF_MODEL_BLOCKODE_REGRESSION_MODEL_H_
+#ifndef YDF_MODEL_COBROC_REGRESSION_MODEL_H_
+#define YDF_MODEL_COBROC_REGRESSION_MODEL_H_
 
 #include <cassert>
 #include <cstring>
-#include <stdint.h>
+#include <cstdint>
 
-namespace blockode_regression_model {
+namespace coBroc_regression_model {
 
 constexpr const int kNumFeatures = 16;
 constexpr const uint16_t kNumTrees = 300;
@@ -10992,5 +10992,5 @@ inline float Predict(const Instance& instance) {
   return accumulator;
 }
 
-}  // namespace blockode_regression_model
+}  // namespace coBroc_regression_model
 #endif
