@@ -1090,24 +1090,6 @@ namespace {
             }
         }
 
-        const char* blockIcon(BlockType t) {
-            switch (t) {
-                case BlockType::Move:
-                    return "SQ";
-                case BlockType::Draw:
-                    return "TRI";
-                case BlockType::If:
-                    return "DIA";
-                case BlockType::Repeat:
-                    return "LP";
-                case BlockType::End:
-                    return "END";
-                case BlockType::None:
-                default:
-                    return "--";
-            }
-        }
-
         const char* turnName(TurnState t) {
             switch (t) {
                 case TurnState::PlayerTurn:
