@@ -65,7 +65,7 @@ namespace {
     constexpr int16_t RANDOM_STEP_PIXELS = static_cast<int16_t>(RESULT_RADIUS + 2);
     constexpr size_t AI_CANDIDATE_SLOTS = MOVE_PARAM_MAX - MOVE_PARAM_MIN + 1 +
                                           (COLOR_PARAM_MAX - COLOR_PARAM_MIN + 1) * 2 +
-                                          MAX_REPEAT + 1;
+                                          MAX_REPEAT + 2;
     constexpr uint8_t AI_MAX_PREDICT_CANDIDATES = 20;
     constexpr uint8_t YDF_WORKER_BATCH_CAPACITY = AI_MAX_PREDICT_CANDIDATES;
 
@@ -80,15 +80,16 @@ namespace {
         Draw = 2,
         If = 3,
         Repeat = 4,
-        End = 5
+        End = 5,
+        Else = 6
     };
 
     constexpr uint8_t blockIndex(BlockType t) {
         return static_cast<uint8_t>(t);
     }
 
-    constexpr std::array<BlockType, 5> kPlayableBlocks = {
-        BlockType::Move, BlockType::Draw, BlockType::If, BlockType::Repeat, BlockType::End
+    constexpr std::array<BlockType, 6> kPlayableBlocks = {
+        BlockType::Move, BlockType::Draw, BlockType::If, BlockType::Else, BlockType::Repeat, BlockType::End
     };
 
     constexpr BlockType nextPlayableBlock(BlockType t) {
@@ -98,6 +99,8 @@ namespace {
             case BlockType::Draw:
                 return BlockType::If;
             case BlockType::If:
+                return BlockType::Else;
+            case BlockType::Else:
                 return BlockType::Repeat;
             case BlockType::Repeat:
                 return BlockType::End;
@@ -108,13 +111,14 @@ namespace {
         }
     }
 
-    constexpr std::array<const char*, 6> kBlockNames = {
+    constexpr std::array<const char*, 7> kBlockNames = {
         "NONE",
         "MOVE",
         "DRAW",
         "IF",
         "REPEAT",
         "END",
+        "ELSE",
     };
 
     constexpr const char* blockName(BlockType t) {
@@ -162,6 +166,7 @@ namespace {
                 return COLOR_PARAM_MIN;
             case BlockType::Repeat:
                 return 1;
+            case BlockType::Else:
             case BlockType::End:
             case BlockType::None:
             default:
@@ -178,6 +183,7 @@ namespace {
                 return COLOR_PARAM_MAX;
             case BlockType::Repeat:
                 return MAX_REPEAT;
+            case BlockType::Else:
             case BlockType::End:
             case BlockType::None:
             default:
@@ -205,9 +211,38 @@ namespace {
         uint16_t circle_count = 0;
     };
 
-    struct LoopFrame {
+    struct RepeatRuntimeFrame {
         uint8_t start_pc = 0;
         uint8_t remaining = 0;
+    };
+
+    enum class VmOp : uint8_t {
+        Nop = 0,
+        EnterMove = 1,
+        ExitMove = 2,
+        Draw = 3,
+        IfColorMismatchJump = 4,
+        Jump = 5,
+        RepeatBegin = 6,
+        RepeatEnd = 7,
+    };
+
+    struct VmInstruction {
+        VmOp op = VmOp::Nop;
+        uint8_t param = 0;
+        uint8_t jump_pc = 0;
+    };
+
+    struct ControlFlowGraph {
+        std::array<int8_t, MAX_MOVES> block_end{};
+        std::array<int8_t, MAX_MOVES> end_start{};
+        std::array<int8_t, MAX_MOVES> if_else{};
+        std::array<int8_t, MAX_MOVES> else_if{};
+    };
+
+    struct CompiledProgram {
+        std::array<VmInstruction, MAX_MOVES> instructions{};
+        uint8_t instruction_count = 0;
     };
 
     struct AICandidate {
@@ -272,7 +307,8 @@ namespace {
     }
 
     bool isPlayableBlock(BlockType t) {
-        return t == BlockType::Move || t == BlockType::Draw || t == BlockType::If || t == BlockType::Repeat || t == BlockType::End;
+        return t == BlockType::Move || t == BlockType::Draw || t == BlockType::If ||
+               t == BlockType::Else || t == BlockType::Repeat || t == BlockType::End;
     }
 
     bool insideMoveScope(const ProgramState& s) {
@@ -290,6 +326,10 @@ namespace {
                 if (open_top < MAX_MOVES) {
                     open_stack[open_top++] = t;
                 }
+                continue;
+            }
+            if (t == BlockType::Else && open_top > 0 && open_stack[open_top - 1] == BlockType::If) {
+                open_stack[open_top - 1] = BlockType::Else;
             }
         }
         for (uint8_t i = 0; i < open_top; i++) {
@@ -300,14 +340,49 @@ namespace {
         return false;
     }
 
+    bool canOpenElseBranch(const ProgramState& s) {
+        std::array<BlockType, MAX_MOVES> open_types{};
+        std::array<bool, MAX_MOVES> if_has_else{};
+        uint8_t open_top = 0;
+        for (uint8_t i = 0; i < s.move_count; i++) {
+            const BlockType t = s.program[i].type;
+            if (t == BlockType::Move || t == BlockType::If || t == BlockType::Repeat) {
+                if (open_top >= MAX_MOVES) {
+                    return false;
+                }
+                open_types[open_top] = t;
+                if_has_else[open_top] = false;
+                open_top++;
+                continue;
+            }
+            if (t == BlockType::Else) {
+                if (open_top == 0 || open_types[open_top - 1] != BlockType::If || if_has_else[open_top - 1]) {
+                    return false;
+                }
+                if_has_else[open_top - 1] = true;
+                continue;
+            }
+            if (t == BlockType::End) {
+                if (open_top == 0) {
+                    return false;
+                }
+                open_top--;
+            }
+        }
+        return open_top > 0 && open_types[open_top - 1] == BlockType::If && !if_has_else[open_top - 1];
+    }
+
     bool blockAllowedByDepth(const ProgramState& s, BlockType t) {
+        if (t == BlockType::Else) {
+            return canOpenElseBranch(s);
+        }
         if (t == BlockType::End) {
             return s.syntax_depth > 0;
         }
         if ((t == BlockType::Move || t == BlockType::If || t == BlockType::Repeat) && s.syntax_depth >= MAX_NEST_DEPTH) {
             return false;
         }
-        if (insideMoveScope(s) && (t == BlockType::If || t == BlockType::Repeat)) {
+        if (insideMoveScope(s) && (t == BlockType::If || t == BlockType::Else || t == BlockType::Repeat)) {
             return false;
         }
         return true;
@@ -322,6 +397,9 @@ namespace {
             if ((last_type == BlockType::Repeat || last_type == BlockType::If) && t == last_type) {
                 return false;
             }
+        }
+        if (t == BlockType::Else) {
+            return param == 0;
         }
         if (t == BlockType::Move && (param < MOVE_PARAM_MIN || param > MOVE_PARAM_MAX)) {
             return false;
@@ -519,6 +597,9 @@ namespace {
             } else if (t == BlockType::Repeat) {
                 min_param = 1;
                 max_param = MAX_REPEAT;
+            } else if (t == BlockType::Else) {
+                min_param = 0;
+                max_param = 0;
             } else {
                 min_param = 0;
                 max_param = 0;
@@ -798,124 +879,216 @@ namespace {
         }
     }
 
-    bool compileAndRun(ProgramState& s) {
-        s.runtime = RuntimeState{};
-        finalizeSyntax(s);
-
-        std::array<int8_t, MAX_MOVES> block_end{};
-        std::array<int8_t, MAX_MOVES> end_start{};
-        block_end.fill(-1);
-        end_start.fill(-1);
+    bool buildControlFlowGraph(const ProgramState& s, ControlFlowGraph& cfg) {
+        cfg = ControlFlowGraph{};
+        cfg.block_end.fill(-1);
+        cfg.end_start.fill(-1);
+        cfg.if_else.fill(-1);
+        cfg.else_if.fill(-1);
 
         std::array<uint8_t, MAX_MOVES> stack{};
         uint8_t top = 0;
         for (uint8_t pc = 0; pc < s.move_count; pc++) {
-            const auto t = s.program[pc].type;
+            const BlockType t = s.program[pc].type;
             if (t == BlockType::Move || t == BlockType::If || t == BlockType::Repeat) {
                 if (top >= MAX_MOVES) {
                     return false;
                 }
                 stack[top++] = pc;
-            } else if (t == BlockType::End) {
+                continue;
+            }
+
+            if (t == BlockType::Else) {
+                if (top == 0) {
+                    return false;
+                }
+                const uint8_t if_pc = stack[top - 1];
+                if (s.program[if_pc].type != BlockType::If || cfg.if_else[if_pc] >= 0) {
+                    return false;
+                }
+                cfg.if_else[if_pc] = static_cast<int8_t>(pc);
+                cfg.else_if[pc] = static_cast<int8_t>(if_pc);
+                continue;
+            }
+
+            if (t == BlockType::End) {
                 if (top == 0) {
                     return false;
                 }
                 const uint8_t start = stack[--top];
-                block_end[start] = static_cast<int8_t>(pc);
-                end_start[pc] = static_cast<int8_t>(start);
+                cfg.block_end[start] = static_cast<int8_t>(pc);
+                cfg.end_start[pc] = static_cast<int8_t>(start);
+                continue;
             }
         }
-        if (top != 0) {
-            return false;
-        }
 
-        std::array<LoopFrame, MAX_NEST_DEPTH> loops{};
-        uint8_t loop_top = 0;
-        uint8_t pc = 0;
-        std::array<uint8_t, MAX_NEST_DEPTH> move_step_stack{};
-        uint8_t move_anchor_top = 0;
+        return top == 0;
+    }
 
-        while (pc < s.move_count) {
+    bool compileProgram(const ProgramState& s, const ControlFlowGraph& cfg, CompiledProgram& out) {
+        out = CompiledProgram{};
+        out.instruction_count = s.move_count;
+        for (uint8_t pc = 0; pc < s.move_count; pc++) {
             const ProgramStep step = s.program[pc];
+            auto& ins = out.instructions[pc];
+            ins = VmInstruction{};
+
             switch (step.type) {
-                case BlockType::Move: {
-                    if (block_end[pc] < 0 || move_anchor_top >= MAX_NEST_DEPTH) {
+                case BlockType::Move:
+                    if (cfg.block_end[pc] < 0) {
                         return false;
                     }
-                    move_step_stack[move_anchor_top++] = step.param;
-                    pc++;
+                    ins.op = VmOp::EnterMove;
+                    ins.param = step.param;
+                    break;
+                case BlockType::Draw:
+                    ins.op = VmOp::Draw;
+                    ins.param = step.param;
+                    break;
+                case BlockType::If:
+                    if (cfg.block_end[pc] < 0) {
+                        return false;
+                    }
+                    ins.op = VmOp::IfColorMismatchJump;
+                    ins.param = step.param;
+                    if (cfg.if_else[pc] >= 0) {
+                        ins.jump_pc = static_cast<uint8_t>(cfg.if_else[pc] + 1);
+                    } else {
+                        ins.jump_pc = static_cast<uint8_t>(cfg.block_end[pc] + 1);
+                    }
+                    break;
+                case BlockType::Else: {
+                    const int8_t if_pc = cfg.else_if[pc];
+                    if (if_pc < 0 || cfg.block_end[static_cast<uint8_t>(if_pc)] < 0) {
+                        return false;
+                    }
+                    ins.op = VmOp::Jump;
+                    ins.jump_pc = static_cast<uint8_t>(cfg.block_end[static_cast<uint8_t>(if_pc)] + 1);
                     break;
                 }
-                case BlockType::Draw:
+                case BlockType::Repeat:
+                    if (cfg.block_end[pc] < 0) {
+                        return false;
+                    }
+                    ins.op = VmOp::RepeatBegin;
+                    ins.param = step.param;
+                    break;
+                case BlockType::End: {
+                    const int8_t start = cfg.end_start[pc];
+                    if (start < 0) {
+                        return false;
+                    }
+                    const BlockType open = s.program[static_cast<uint8_t>(start)].type;
+                    if (open == BlockType::Move) {
+                        ins.op = VmOp::ExitMove;
+                    } else if (open == BlockType::If) {
+                        ins.op = VmOp::Nop;
+                    } else if (open == BlockType::Repeat) {
+                        ins.op = VmOp::RepeatEnd;
+                        ins.jump_pc = static_cast<uint8_t>(start + 1);
+                    } else {
+                        return false;
+                    }
+                    break;
+                }
+                case BlockType::None:
+                default:
+                    return false;
+            }
+        }
+        return true;
+    }
+
+    bool executeProgram(const ProgramState& s, const CompiledProgram& program, RuntimeState& runtime) {
+        runtime = RuntimeState{};
+        std::array<uint8_t, MAX_NEST_DEPTH> move_step_stack{};
+        uint8_t move_anchor_top = 0;
+        std::array<RepeatRuntimeFrame, MAX_NEST_DEPTH> repeat_stack{};
+        uint8_t repeat_top = 0;
+
+        uint8_t pc = 0;
+        while (pc < program.instruction_count) {
+            const VmInstruction& ins = program.instructions[pc];
+            switch (ins.op) {
+                case VmOp::Nop:
+                    pc++;
+                    break;
+                case VmOp::EnterMove:
+                    if (move_anchor_top >= MAX_NEST_DEPTH) {
+                        return false;
+                    }
+                    move_step_stack[move_anchor_top++] = ins.param;
+                    pc++;
+                    break;
+                case VmOp::ExitMove:
+                    if (move_anchor_top == 0) {
+                        return false;
+                    }
+                    move_anchor_top--;
+                    pc++;
+                    break;
+                case VmOp::Draw:
                     addDrawCircle(
-                        s.runtime,
-                        colorIndexFromParam(step.param),
+                        runtime,
+                        colorIndexFromParam(ins.param),
                         move_anchor_top > 0 ? move_step_stack[move_anchor_top - 1] : 0
                     );
                     pc++;
                     break;
-                case BlockType::If: {
-                    if (block_end[pc] < 0) {
-                        return false;
-                    }
-                    const bool cond = (colorIndexFromParam(s.run_input_color) == colorIndexFromParam(step.param));
-                    if (!cond) {
-                        pc = static_cast<uint8_t>(block_end[pc] + 1);
-                    } else {
-                        pc++;
-                    }
+                case VmOp::IfColorMismatchJump: {
+                    const bool cond = colorIndexFromParam(s.run_input_color) == colorIndexFromParam(ins.param);
+                    pc = cond ? static_cast<uint8_t>(pc + 1) : ins.jump_pc;
                     break;
                 }
-                case BlockType::Repeat: {
-                    if (block_end[pc] < 0 || loop_top >= MAX_NEST_DEPTH) {
+                case VmOp::Jump:
+                    pc = ins.jump_pc;
+                    break;
+                case VmOp::RepeatBegin:
+                    if (repeat_top >= MAX_NEST_DEPTH) {
                         return false;
                     }
-                    loops[loop_top++] = {pc, step.param};
+                    repeat_stack[repeat_top++] = {pc, ins.param};
                     pc++;
                     break;
-                }
-                case BlockType::End: {
-                    const int8_t start = end_start[pc];
-                    if (start < 0) {
+                case VmOp::RepeatEnd:
+                    if (repeat_top == 0) {
                         return false;
                     }
-                    const auto open_type = s.program[static_cast<uint8_t>(start)].type;
-                    if (open_type == BlockType::Repeat) {
-                        if (loop_top == 0) {
-                            return false;
-                        }
-                        auto& frame = loops[loop_top - 1];
-                        if (frame.start_pc != static_cast<uint8_t>(start)) {
-                            return false;
-                        }
-                        if (frame.remaining > 1) {
-                            frame.remaining--;
-                            pc = static_cast<uint8_t>(frame.start_pc + 1);
-                        } else {
-                            loop_top--;
-                            pc++;
-                        }
-                        break;
-                    }
-                    if (open_type == BlockType::Move) {
-                        if (move_anchor_top == 0) {
-                            return false;
-                        }
-                        move_anchor_top--;
+                    if (repeat_stack[repeat_top - 1].remaining > 1) {
+                        repeat_stack[repeat_top - 1].remaining--;
+                        pc = ins.jump_pc;
+                    } else {
+                        repeat_top--;
                         pc++;
-                        break;
                     }
-                    if (open_type == BlockType::If) {
-                        pc++;
-                        break;
-                    }
-                    return false;
-                }
+                    break;
                 default:
                     return false;
             }
         }
 
+        return repeat_top == 0 && move_anchor_top == 0;
+    }
+
+    bool compileAndRun(ProgramState& s) {
+        finalizeSyntax(s);
+
+        ControlFlowGraph cfg{};
+        if (!buildControlFlowGraph(s, cfg)) {
+            return false;
+        }
+
+        CompiledProgram compiled{};
+        if (!compileProgram(s, cfg, compiled)) {
+            return false;
+        }
+
+        RuntimeState runtime{};
+        if (!executeProgram(s, compiled, runtime)) {
+            return false;
+        }
+
+        s.runtime = runtime;
         return true;
     }
 
@@ -1038,17 +1211,20 @@ namespace {
     }
 
     namespace ui {
-        struct Context {
-            std::array<lv_color_t, LCD_WIDTH * LCD_HEIGHT> draw_buffer{};
-            std::array<uint16_t, LCD_WIDTH * LCD_HEIGHT> panel_buffer{};
-            std::array<lv_point_t, (MAX_MOVES + 2) * 8> line_points{};
-            size_t line_point_count = 0;
-            lv_disp_draw_buf_t draw_buf{};
-            lv_disp_drv_t disp_drv{};
-            lv_disp_t* display = nullptr;
+        constexpr uint16_t LVGL_DRAW_BUFFER_LINES = 24;
+        constexpr size_t LVGL_DRAW_BUFFER_PIXEL_COUNT = static_cast<size_t>(LCD_WIDTH) * LVGL_DRAW_BUFFER_LINES;
+        constexpr size_t LCD_TX_LINE_BUFFER_SIZE = static_cast<size_t>(LCD_WIDTH) * sizeof(lv_color_t);
+
+        struct LvglUiContext {
+            std::array<lv_color_t, LVGL_DRAW_BUFFER_PIXEL_COUNT> lvgl_draw_pixels{};
+            std::array<uint8_t, LCD_TX_LINE_BUFFER_SIZE> lcd_tx_line_buffer{};
+            std::array<lv_point_t, (MAX_MOVES + 2) * 8> flow_line_points{};
+            size_t flow_line_point_count = 0;
+            lv_disp_draw_buf_t lvgl_draw_buf{};
+            lv_disp_drv_t lvgl_disp_drv{};
         };
 
-        Context g_ctx{};
+        LvglUiContext g_lvgl_ui{};
 
         constexpr lv_coord_t UI_MARGIN = 6;
         constexpr lv_coord_t UI_CARD_WIDTH = static_cast<lv_coord_t>(LCD_WIDTH - UI_MARGIN * 2);
@@ -1061,11 +1237,7 @@ namespace {
         constexpr lv_coord_t FLOW_NODE_GAP = 12;
         constexpr lv_coord_t FLOW_TOP_PADDING = 8;
 
-        uint16_t panelColorFromLv(uint16_t rgb565) {
-            return static_cast<uint16_t>((rgb565 << 8) | (rgb565 >> 8));
-        }
-
-        lv_color_t lvColorFromRgb565(uint16_t rgb565) {
+        lv_color_t lvColorFromRgb565Fast(uint16_t rgb565) {
             const uint8_t r = static_cast<uint8_t>(((rgb565 >> 11) & 0x1F) * 255 / 31);
             const uint8_t g = static_cast<uint8_t>(((rgb565 >> 5) & 0x3F) * 255 / 63);
             const uint8_t b = static_cast<uint8_t>((rgb565 & 0x1F) * 255 / 31);
@@ -1080,6 +1252,8 @@ namespace {
                     return lv_color_hex(0x14A44D);
                 case BlockType::If:
                     return lv_color_hex(0xA95DF5);
+                case BlockType::Else:
+                    return lv_color_hex(0xE056FD);
                 case BlockType::Repeat:
                     return lv_color_hex(0xF39C12);
                 case BlockType::End:
@@ -1121,7 +1295,7 @@ namespace {
             lv_obj_set_size(swatch, size, size);
             lv_obj_set_pos(swatch, x, y);
             lv_obj_set_style_radius(swatch, LV_RADIUS_CIRCLE, 0);
-            lv_obj_set_style_bg_color(swatch, lvColorFromRgb565(paintColorByParam(param)), 0);
+            lv_obj_set_style_bg_color(swatch, lvColorFromRgb565Fast(paintColorByParam(param)), 0);
             lv_obj_set_style_bg_opa(swatch, LV_OPA_COVER, 0);
             lv_obj_set_style_border_width(swatch, 1, 0);
             lv_obj_set_style_border_color(swatch, lv_color_hex(0x222222), 0);
@@ -1130,11 +1304,11 @@ namespace {
         }
 
         lv_point_t* reserveLinePoints(size_t count) {
-            if (g_ctx.line_point_count + count > g_ctx.line_points.size()) {
+            if (g_lvgl_ui.flow_line_point_count + count > g_lvgl_ui.flow_line_points.size()) {
                 return nullptr;
             }
-            auto* ptr = &g_ctx.line_points[g_ctx.line_point_count];
-            g_ctx.line_point_count += count;
+            auto* ptr = &g_lvgl_ui.flow_line_points[g_lvgl_ui.flow_line_point_count];
+            g_lvgl_ui.flow_line_point_count += count;
             return ptr;
         }
 
@@ -1303,6 +1477,15 @@ namespace {
                 case BlockType::If:
                     addDiamond(parent, x, y, size, color, line_width);
                     break;
+                case BlockType::Else: {
+                    auto* alt = lv_obj_create(parent);
+                    styleShape(alt, x, y, size, color, selected, 8);
+                    auto* mark = lv_label_create(alt);
+                    lv_label_set_text(mark, "E");
+                    lv_obj_set_style_text_color(mark, color, 0);
+                    lv_obj_center(mark);
+                    break;
+                }
                 case BlockType::Repeat: {
                     auto* loop = lv_obj_create(parent);
                     styleShape(loop, x, y, size, color, selected, 6);
@@ -1323,7 +1506,7 @@ namespace {
         }
 
         void drawMain(const ProgramState& s) {
-            g_ctx.line_point_count = 0;
+            g_lvgl_ui.flow_line_point_count = 0;
 
             auto* scr = lv_scr_act();
             lv_obj_clean(scr);
@@ -1532,7 +1715,7 @@ namespace {
                 lv_obj_set_size(dot, static_cast<lv_coord_t>(RESULT_RADIUS * 2), static_cast<lv_coord_t>(RESULT_RADIUS * 2));
                 lv_obj_set_pos(dot, px, py);
                 lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
-                lv_obj_set_style_bg_color(dot, lvColorFromRgb565(kPaintColors[color_idx]), 0);
+                lv_obj_set_style_bg_color(dot, lvColorFromRgb565Fast(kPaintColors[color_idx]), 0);
                 lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
                 lv_obj_set_style_border_width(dot, 1, 0);
                 lv_obj_set_style_border_color(dot, lv_color_hex(0x222222), 0);
@@ -1544,7 +1727,7 @@ namespace {
             lv_obj_set_pos(controls, 12, 212);
         }
 
-        void render(const ProgramState& s) {
+        void rebuildScreen(const ProgramState& s) {
             if (s.turn == TurnState::SelectInputColor) {
                 drawColorSelect(s);
             } else if (s.turn == TurnState::Finished) {
@@ -1552,63 +1735,81 @@ namespace {
             } else {
                 drawMain(s);
             }
-            lv_refr_now(g_ctx.display);
         }
 
-        void flushCb(lv_disp_drv_t* drv, const lv_area_t* area, lv_color_t* color_p) {
+        void lvglFlushCallback(lv_disp_drv_t* drv, const lv_area_t* area, lv_color_t* color_p) {
+            auto* ctx = static_cast<LvglUiContext*>(drv->user_data);
+            if (ctx == nullptr) {
+                lv_disp_flush_ready(drv);
+                return;
+            }
+
             const int32_t x1 = std::max<int32_t>(0, area->x1);
             const int32_t y1 = std::max<int32_t>(0, area->y1);
             const int32_t x2 = std::min<int32_t>(LCD_WIDTH - 1, area->x2);
             const int32_t y2 = std::min<int32_t>(LCD_HEIGHT - 1, area->y2);
 
-            if (x2 >= x1 && y2 >= y1) {
-                const int32_t area_w = area->x2 - area->x1 + 1;
-                for (int32_t y = y1; y <= y2; y++) {
-                    const int32_t src_y = y - area->y1;
-                    const auto* src = color_p + src_y * area_w + (x1 - area->x1);
-                    auto* dst = g_ctx.panel_buffer.data() + y * LCD_WIDTH + x1;
-                    for (int32_t x = x1; x <= x2; x++) {
-                        *dst++ = panelColorFromLv(src->full);
-                        src++;
-                    }
-                }
+            if (x2 < x1 || y2 < y1) {
+                lv_disp_flush_ready(drv);
+                return;
             }
 
-            LCD_1IN3_Display(g_ctx.panel_buffer.data());
+            const int32_t flush_w = x2 - x1 + 1;
+            const int32_t flush_h = y2 - y1 + 1;
+            const int32_t src_w = area->x2 - area->x1 + 1;
+            const int32_t src_x0 = x1 - area->x1;
+            const int32_t src_y0 = y1 - area->y1;
+
+            LCD_1IN3_SetWindows(
+                static_cast<UWORD>(x1),
+                static_cast<UWORD>(y1),
+                static_cast<UWORD>(x2 + 1),
+                static_cast<UWORD>(y2 + 1)
+            );
+            DEV_Digital_Write(LCD_DC_PIN, 1);
+            DEV_Digital_Write(LCD_CS_PIN, 0);
+
+            for (int32_t row = 0; row < flush_h; row++) {
+                const lv_color_t* src = color_p + (src_y0 + row) * src_w + src_x0;
+                auto* tx = ctx->lcd_tx_line_buffer.data();
+                for (int32_t col = 0; col < flush_w; col++) {
+                    const uint16_t color = src[col].full;
+                    tx[col * 2] = static_cast<uint8_t>(color >> 8);
+                    tx[col * 2 + 1] = static_cast<uint8_t>(color & 0xFF);
+                }
+                DEV_SPI_Write_nByte(tx, static_cast<uint32_t>(flush_w * 2));
+            }
+            DEV_Digital_Write(LCD_CS_PIN, 1);
+
             lv_disp_flush_ready(drv);
         }
 
-        void init() {
+        void initLvglDisplay() {
             lv_init();
-            std::fill(
-                g_ctx.panel_buffer.begin(),
-                g_ctx.panel_buffer.end(),
-                panelColorFromLv(RGB565_WHITE)
-            );
 
             lv_disp_draw_buf_init(
-                &g_ctx.draw_buf,
-                g_ctx.draw_buffer.data(),
+                &g_lvgl_ui.lvgl_draw_buf,
+                g_lvgl_ui.lvgl_draw_pixels.data(),
                 nullptr,
-                static_cast<uint32_t>(g_ctx.draw_buffer.size())
+                static_cast<uint32_t>(g_lvgl_ui.lvgl_draw_pixels.size())
             );
 
-            lv_disp_drv_init(&g_ctx.disp_drv);
-            g_ctx.disp_drv.hor_res = LCD_WIDTH;
-            g_ctx.disp_drv.ver_res = LCD_HEIGHT;
-            g_ctx.disp_drv.flush_cb = flushCb;
-            g_ctx.disp_drv.draw_buf = &g_ctx.draw_buf;
-            g_ctx.disp_drv.full_refresh = 1;
-            g_ctx.display = lv_disp_drv_register(&g_ctx.disp_drv);
+            lv_disp_drv_init(&g_lvgl_ui.lvgl_disp_drv);
+            g_lvgl_ui.lvgl_disp_drv.hor_res = LCD_WIDTH;
+            g_lvgl_ui.lvgl_disp_drv.ver_res = LCD_HEIGHT;
+            g_lvgl_ui.lvgl_disp_drv.flush_cb = lvglFlushCallback;
+            g_lvgl_ui.lvgl_disp_drv.draw_buf = &g_lvgl_ui.lvgl_draw_buf;
+            g_lvgl_ui.lvgl_disp_drv.user_data = &g_lvgl_ui;
+            lv_disp_drv_register(&g_lvgl_ui.lvgl_disp_drv);
         }
 
-        void tick(uint32_t elapsed_ms) {
+        void updateLvglTick(uint32_t elapsed_ms) {
             if (elapsed_ms > 0) {
                 lv_tick_inc(elapsed_ms);
             }
         }
 
-        void handleTasks() {
+        void runLvglTasks() {
             lv_timer_handler();
         }
     }
@@ -1622,9 +1823,9 @@ int LCD() {
     DEV_SET_PWM(50);
     printf("1.3inch LCD init...\r\n");
     LCD_1IN3_Init(HORIZONTAL);
-    LCD_1IN3_Clear(ui::panelColorFromLv(RGB565_WHITE));
+    LCD_1IN3_Clear(RGB565_WHITE);
     hardware::initInfraredPins();
-    ui::init();
+    ui::initLvglDisplay();
     startYdfWorker();
 
     ProgramState state;
@@ -1635,9 +1836,9 @@ int LCD() {
     uint32_t last_tick_ms = to_ms_since_boot(get_absolute_time());
     while (running) {
         const uint32_t now_ms = to_ms_since_boot(get_absolute_time());
-        ui::tick(now_ms - last_tick_ms);
+        ui::updateLvglTick(now_ms - last_tick_ms);
         last_tick_ms = now_ms;
-        ui::handleTasks();
+        ui::runLvglTasks();
 
         if (state.turn == TurnState::PlayerTurn) {
             const bool changed = handlePlayerInput(state);
@@ -1653,7 +1854,8 @@ int LCD() {
             }
 
             if (changed || needs_redraw) {
-                ui::render(state);
+                ui::rebuildScreen(state);
+                ui::runLvglTasks();
                 needs_redraw = false;
             }
             sleep_ms(12);
@@ -1668,7 +1870,8 @@ int LCD() {
                 continue;
             }
             if (changed || needs_redraw) {
-                ui::render(state);
+                ui::rebuildScreen(state);
+                ui::runLvglTasks();
                 needs_redraw = false;
             }
             sleep_ms(12);
@@ -1677,7 +1880,8 @@ int LCD() {
 
         if (state.turn == TurnState::AITurn) {
             performAITurn(state);
-            ui::render(state);
+            ui::rebuildScreen(state);
+            ui::runLvglTasks();
             needs_redraw = false;
             sleep_ms(180);
             continue;
@@ -1690,7 +1894,8 @@ int LCD() {
         }
 
         if (needs_redraw) {
-            ui::render(state);
+            ui::rebuildScreen(state);
+            ui::runLvglTasks();
             needs_redraw = false;
         }
 

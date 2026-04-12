@@ -181,9 +181,6 @@ void DEV_SET_PWM(uint8_t Value){
     }else {
         pwm_set_chan_level(slice_num, PWM_CHAN_B, Value);
     }
-        
-    
-    
 }
 
 /******************************************************************************
