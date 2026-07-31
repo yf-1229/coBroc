@@ -6,7 +6,7 @@ extern "C" {
 #include "Infrared.h"
 #include "LCD_1in3.h"
 #include "DEV_Config.h"
-#include "GUI_Paint.h"
+#include "lvgl.h"
 #include <stdio.h>
 }
 
@@ -42,12 +42,9 @@ namespace {
     constexpr uint8_t MAX_NEST_DEPTH = 6;
 
     constexpr uint8_t LIST_VISIBLE = 9;
-    constexpr uint16_t HEADER_TOP_Y = 2;
-    constexpr uint16_t HEADER_HEIGHT = 42;
-    constexpr uint16_t LIST_TOP_Y = HEADER_TOP_Y + HEADER_HEIGHT + 4;
-    constexpr uint16_t LIST_START_X = 16;
-    constexpr uint16_t LIST_ROW_H = 20;
-    constexpr uint16_t INDENT_STEP = 16;
+
+    constexpr uint16_t LCD_WIDTH = 240;
+    constexpr uint16_t LCD_HEIGHT = 240;
 
     constexpr uint8_t COLOR_COUNT = 8;
     constexpr uint8_t COLOR_PARAM_MIN = 1;
@@ -55,8 +52,8 @@ namespace {
     constexpr uint8_t MOVE_PARAM_MIN = 1;
     constexpr uint8_t MOVE_PARAM_MAX = 19;             // cell index range 1..19
     constexpr uint8_t MAX_REPEAT = 7;                  // 1..7
-    constexpr uint16_t RESULT_WIDTH = 240;
-    constexpr uint16_t RESULT_HEIGHT = 240;
+    constexpr uint16_t RESULT_WIDTH = LCD_WIDTH;
+    constexpr uint16_t RESULT_HEIGHT = LCD_HEIGHT;
     constexpr uint8_t RESULT_RADIUS = 6;
     constexpr uint8_t RESULT_MIN_COORD = RESULT_RADIUS;
     constexpr uint8_t RESULT_MAX_X = static_cast<uint8_t>(RESULT_WIDTH - RESULT_RADIUS - 1);
@@ -68,7 +65,7 @@ namespace {
     constexpr int16_t RANDOM_STEP_PIXELS = static_cast<int16_t>(RESULT_RADIUS + 2);
     constexpr size_t AI_CANDIDATE_SLOTS = MOVE_PARAM_MAX - MOVE_PARAM_MIN + 1 +
                                           (COLOR_PARAM_MAX - COLOR_PARAM_MIN + 1) * 2 +
-                                          MAX_REPEAT + 1;
+                                          MAX_REPEAT + 2;
     constexpr uint8_t AI_MAX_PREDICT_CANDIDATES = 20;
     constexpr uint8_t YDF_WORKER_BATCH_CAPACITY = AI_MAX_PREDICT_CANDIDATES;
 
@@ -83,15 +80,16 @@ namespace {
         Draw = 2,
         If = 3,
         Repeat = 4,
-        End = 5
+        End = 5,
+        Else = 6
     };
 
     constexpr uint8_t blockIndex(BlockType t) {
         return static_cast<uint8_t>(t);
     }
 
-    constexpr std::array<BlockType, 5> kPlayableBlocks = {
-        BlockType::Move, BlockType::Draw, BlockType::If, BlockType::Repeat, BlockType::End
+    constexpr std::array<BlockType, 6> kPlayableBlocks = {
+        BlockType::Move, BlockType::Draw, BlockType::If, BlockType::Else, BlockType::Repeat, BlockType::End
     };
 
     constexpr BlockType nextPlayableBlock(BlockType t) {
@@ -101,6 +99,8 @@ namespace {
             case BlockType::Draw:
                 return BlockType::If;
             case BlockType::If:
+                return BlockType::Else;
+            case BlockType::Else:
                 return BlockType::Repeat;
             case BlockType::Repeat:
                 return BlockType::End;
@@ -111,13 +111,14 @@ namespace {
         }
     }
 
-    constexpr std::array<const char*, 6> kBlockNames = {
+    constexpr std::array<const char*, 7> kBlockNames = {
         "NONE",
         "MOVE",
         "DRAW",
         "IF",
         "REPEAT",
         "END",
+        "ELSE",
     };
 
     constexpr const char* blockName(BlockType t) {
@@ -132,8 +133,17 @@ namespace {
         Finished = 4
     };
 
-    constexpr std::array<UWORD, COLOR_COUNT> kPaintColors = {
-        WHITE, RED, BRRED, YELLOW, GREEN, BLUE, MAGENTA, BLACK
+    constexpr uint16_t RGB565_WHITE = 0xFFFF;
+    constexpr uint16_t RGB565_BLACK = 0x0000;
+    constexpr uint16_t RGB565_RED = 0xF800;
+    constexpr uint16_t RGB565_ORANGE = 0xFC07;
+    constexpr uint16_t RGB565_YELLOW = 0xFFE0;
+    constexpr uint16_t RGB565_GREEN = 0x07E0;
+    constexpr uint16_t RGB565_BLUE = 0x001F;
+    constexpr uint16_t RGB565_MAGENTA = 0xF81F;
+
+    constexpr std::array<uint16_t, COLOR_COUNT> kPaintColors = {
+        RGB565_WHITE, RGB565_RED, RGB565_ORANGE, RGB565_YELLOW, RGB565_GREEN, RGB565_BLUE, RGB565_MAGENTA, RGB565_BLACK
     };
 
     constexpr uint8_t colorIndexFromParam(uint8_t param) {
@@ -143,7 +153,7 @@ namespace {
         return static_cast<uint8_t>((param - COLOR_PARAM_MIN) % COLOR_COUNT);
     }
 
-    constexpr UWORD paintColorByParam(uint8_t param) {
+    constexpr uint16_t paintColorByParam(uint8_t param) {
         return kPaintColors[colorIndexFromParam(param)];
     }
 
@@ -156,6 +166,7 @@ namespace {
                 return COLOR_PARAM_MIN;
             case BlockType::Repeat:
                 return 1;
+            case BlockType::Else:
             case BlockType::End:
             case BlockType::None:
             default:
@@ -172,6 +183,7 @@ namespace {
                 return COLOR_PARAM_MAX;
             case BlockType::Repeat:
                 return MAX_REPEAT;
+            case BlockType::Else:
             case BlockType::End:
             case BlockType::None:
             default:
@@ -199,9 +211,38 @@ namespace {
         uint16_t circle_count = 0;
     };
 
-    struct LoopFrame {
+    struct RepeatRuntimeFrame {
         uint8_t start_pc = 0;
         uint8_t remaining = 0;
+    };
+
+    enum class VmOp : uint8_t {
+        Nop = 0,
+        EnterMove = 1,
+        ExitMove = 2,
+        Draw = 3,
+        IfColorMismatchJump = 4,
+        Jump = 5,
+        RepeatBegin = 6,
+        RepeatEnd = 7,
+    };
+
+    struct VmInstruction {
+        VmOp op = VmOp::Nop;
+        uint8_t param = 0;
+        uint8_t jump_pc = 0;
+    };
+
+    struct ControlFlowGraph {
+        std::array<int8_t, MAX_MOVES> block_end{};
+        std::array<int8_t, MAX_MOVES> end_start{};
+        std::array<int8_t, MAX_MOVES> if_else{};
+        std::array<int8_t, MAX_MOVES> else_if{};
+    };
+
+    struct CompiledProgram {
+        std::array<VmInstruction, MAX_MOVES> instructions{};
+        uint8_t instruction_count = 0;
     };
 
     struct AICandidate {
@@ -266,7 +307,8 @@ namespace {
     }
 
     bool isPlayableBlock(BlockType t) {
-        return t == BlockType::Move || t == BlockType::Draw || t == BlockType::If || t == BlockType::Repeat || t == BlockType::End;
+        return t == BlockType::Move || t == BlockType::Draw || t == BlockType::If ||
+               t == BlockType::Else || t == BlockType::Repeat || t == BlockType::End;
     }
 
     bool insideMoveScope(const ProgramState& s) {
@@ -284,6 +326,10 @@ namespace {
                 if (open_top < MAX_MOVES) {
                     open_stack[open_top++] = t;
                 }
+                continue;
+            }
+            if (t == BlockType::Else && open_top > 0 && open_stack[open_top - 1] == BlockType::If) {
+                open_stack[open_top - 1] = BlockType::Else;
             }
         }
         for (uint8_t i = 0; i < open_top; i++) {
@@ -294,14 +340,49 @@ namespace {
         return false;
     }
 
+    bool canOpenElseBranch(const ProgramState& s) {
+        std::array<BlockType, MAX_MOVES> open_types{};
+        std::array<bool, MAX_MOVES> if_has_else{};
+        uint8_t open_top = 0;
+        for (uint8_t i = 0; i < s.move_count; i++) {
+            const BlockType t = s.program[i].type;
+            if (t == BlockType::Move || t == BlockType::If || t == BlockType::Repeat) {
+                if (open_top >= MAX_MOVES) {
+                    return false;
+                }
+                open_types[open_top] = t;
+                if_has_else[open_top] = false;
+                open_top++;
+                continue;
+            }
+            if (t == BlockType::Else) {
+                if (open_top == 0 || open_types[open_top - 1] != BlockType::If || if_has_else[open_top - 1]) {
+                    return false;
+                }
+                if_has_else[open_top - 1] = true;
+                continue;
+            }
+            if (t == BlockType::End) {
+                if (open_top == 0) {
+                    return false;
+                }
+                open_top--;
+            }
+        }
+        return open_top > 0 && open_types[open_top - 1] == BlockType::If && !if_has_else[open_top - 1];
+    }
+
     bool blockAllowedByDepth(const ProgramState& s, BlockType t) {
+        if (t == BlockType::Else) {
+            return canOpenElseBranch(s);
+        }
         if (t == BlockType::End) {
             return s.syntax_depth > 0;
         }
         if ((t == BlockType::Move || t == BlockType::If || t == BlockType::Repeat) && s.syntax_depth >= MAX_NEST_DEPTH) {
             return false;
         }
-        if (insideMoveScope(s) && (t == BlockType::If || t == BlockType::Repeat)) {
+        if (insideMoveScope(s) && (t == BlockType::If || t == BlockType::Else || t == BlockType::Repeat)) {
             return false;
         }
         return true;
@@ -316,6 +397,9 @@ namespace {
             if ((last_type == BlockType::Repeat || last_type == BlockType::If) && t == last_type) {
                 return false;
             }
+        }
+        if (t == BlockType::Else) {
+            return param == 0;
         }
         if (t == BlockType::Move && (param < MOVE_PARAM_MIN || param > MOVE_PARAM_MAX)) {
             return false;
@@ -513,6 +597,9 @@ namespace {
             } else if (t == BlockType::Repeat) {
                 min_param = 1;
                 max_param = MAX_REPEAT;
+            } else if (t == BlockType::Else) {
+                min_param = 0;
+                max_param = 0;
             } else {
                 min_param = 0;
                 max_param = 0;
@@ -792,124 +879,216 @@ namespace {
         }
     }
 
-    bool compileAndRun(ProgramState& s) {
-        s.runtime = RuntimeState{};
-        finalizeSyntax(s);
-
-        std::array<int8_t, MAX_MOVES> block_end{};
-        std::array<int8_t, MAX_MOVES> end_start{};
-        block_end.fill(-1);
-        end_start.fill(-1);
+    bool buildControlFlowGraph(const ProgramState& s, ControlFlowGraph& cfg) {
+        cfg = ControlFlowGraph{};
+        cfg.block_end.fill(-1);
+        cfg.end_start.fill(-1);
+        cfg.if_else.fill(-1);
+        cfg.else_if.fill(-1);
 
         std::array<uint8_t, MAX_MOVES> stack{};
         uint8_t top = 0;
         for (uint8_t pc = 0; pc < s.move_count; pc++) {
-            const auto t = s.program[pc].type;
+            const BlockType t = s.program[pc].type;
             if (t == BlockType::Move || t == BlockType::If || t == BlockType::Repeat) {
                 if (top >= MAX_MOVES) {
                     return false;
                 }
                 stack[top++] = pc;
-            } else if (t == BlockType::End) {
+                continue;
+            }
+
+            if (t == BlockType::Else) {
+                if (top == 0) {
+                    return false;
+                }
+                const uint8_t if_pc = stack[top - 1];
+                if (s.program[if_pc].type != BlockType::If || cfg.if_else[if_pc] >= 0) {
+                    return false;
+                }
+                cfg.if_else[if_pc] = static_cast<int8_t>(pc);
+                cfg.else_if[pc] = static_cast<int8_t>(if_pc);
+                continue;
+            }
+
+            if (t == BlockType::End) {
                 if (top == 0) {
                     return false;
                 }
                 const uint8_t start = stack[--top];
-                block_end[start] = static_cast<int8_t>(pc);
-                end_start[pc] = static_cast<int8_t>(start);
+                cfg.block_end[start] = static_cast<int8_t>(pc);
+                cfg.end_start[pc] = static_cast<int8_t>(start);
+                continue;
             }
         }
-        if (top != 0) {
-            return false;
-        }
 
-        std::array<LoopFrame, MAX_NEST_DEPTH> loops{};
-        uint8_t loop_top = 0;
-        uint8_t pc = 0;
-        std::array<uint8_t, MAX_NEST_DEPTH> move_step_stack{};
-        uint8_t move_anchor_top = 0;
+        return top == 0;
+    }
 
-        while (pc < s.move_count) {
+    bool compileProgram(const ProgramState& s, const ControlFlowGraph& cfg, CompiledProgram& out) {
+        out = CompiledProgram{};
+        out.instruction_count = s.move_count;
+        for (uint8_t pc = 0; pc < s.move_count; pc++) {
             const ProgramStep step = s.program[pc];
+            auto& ins = out.instructions[pc];
+            ins = VmInstruction{};
+
             switch (step.type) {
-                case BlockType::Move: {
-                    if (block_end[pc] < 0 || move_anchor_top >= MAX_NEST_DEPTH) {
+                case BlockType::Move:
+                    if (cfg.block_end[pc] < 0) {
                         return false;
                     }
-                    move_step_stack[move_anchor_top++] = step.param;
-                    pc++;
+                    ins.op = VmOp::EnterMove;
+                    ins.param = step.param;
+                    break;
+                case BlockType::Draw:
+                    ins.op = VmOp::Draw;
+                    ins.param = step.param;
+                    break;
+                case BlockType::If:
+                    if (cfg.block_end[pc] < 0) {
+                        return false;
+                    }
+                    ins.op = VmOp::IfColorMismatchJump;
+                    ins.param = step.param;
+                    if (cfg.if_else[pc] >= 0) {
+                        ins.jump_pc = static_cast<uint8_t>(cfg.if_else[pc] + 1);
+                    } else {
+                        ins.jump_pc = static_cast<uint8_t>(cfg.block_end[pc] + 1);
+                    }
+                    break;
+                case BlockType::Else: {
+                    const int8_t if_pc = cfg.else_if[pc];
+                    if (if_pc < 0 || cfg.block_end[static_cast<uint8_t>(if_pc)] < 0) {
+                        return false;
+                    }
+                    ins.op = VmOp::Jump;
+                    ins.jump_pc = static_cast<uint8_t>(cfg.block_end[static_cast<uint8_t>(if_pc)] + 1);
                     break;
                 }
-                case BlockType::Draw:
+                case BlockType::Repeat:
+                    if (cfg.block_end[pc] < 0) {
+                        return false;
+                    }
+                    ins.op = VmOp::RepeatBegin;
+                    ins.param = step.param;
+                    break;
+                case BlockType::End: {
+                    const int8_t start = cfg.end_start[pc];
+                    if (start < 0) {
+                        return false;
+                    }
+                    const BlockType open = s.program[static_cast<uint8_t>(start)].type;
+                    if (open == BlockType::Move) {
+                        ins.op = VmOp::ExitMove;
+                    } else if (open == BlockType::If) {
+                        ins.op = VmOp::Nop;
+                    } else if (open == BlockType::Repeat) {
+                        ins.op = VmOp::RepeatEnd;
+                        ins.jump_pc = static_cast<uint8_t>(start + 1);
+                    } else {
+                        return false;
+                    }
+                    break;
+                }
+                case BlockType::None:
+                default:
+                    return false;
+            }
+        }
+        return true;
+    }
+
+    bool executeProgram(const ProgramState& s, const CompiledProgram& program, RuntimeState& runtime) {
+        runtime = RuntimeState{};
+        std::array<uint8_t, MAX_NEST_DEPTH> move_step_stack{};
+        uint8_t move_anchor_top = 0;
+        std::array<RepeatRuntimeFrame, MAX_NEST_DEPTH> repeat_stack{};
+        uint8_t repeat_top = 0;
+
+        uint8_t pc = 0;
+        while (pc < program.instruction_count) {
+            const VmInstruction& ins = program.instructions[pc];
+            switch (ins.op) {
+                case VmOp::Nop:
+                    pc++;
+                    break;
+                case VmOp::EnterMove:
+                    if (move_anchor_top >= MAX_NEST_DEPTH) {
+                        return false;
+                    }
+                    move_step_stack[move_anchor_top++] = ins.param;
+                    pc++;
+                    break;
+                case VmOp::ExitMove:
+                    if (move_anchor_top == 0) {
+                        return false;
+                    }
+                    move_anchor_top--;
+                    pc++;
+                    break;
+                case VmOp::Draw:
                     addDrawCircle(
-                        s.runtime,
-                        colorIndexFromParam(step.param),
+                        runtime,
+                        colorIndexFromParam(ins.param),
                         move_anchor_top > 0 ? move_step_stack[move_anchor_top - 1] : 0
                     );
                     pc++;
                     break;
-                case BlockType::If: {
-                    if (block_end[pc] < 0) {
-                        return false;
-                    }
-                    const bool cond = (colorIndexFromParam(s.run_input_color) == colorIndexFromParam(step.param));
-                    if (!cond) {
-                        pc = static_cast<uint8_t>(block_end[pc] + 1);
-                    } else {
-                        pc++;
-                    }
+                case VmOp::IfColorMismatchJump: {
+                    const bool cond = colorIndexFromParam(s.run_input_color) == colorIndexFromParam(ins.param);
+                    pc = cond ? static_cast<uint8_t>(pc + 1) : ins.jump_pc;
                     break;
                 }
-                case BlockType::Repeat: {
-                    if (block_end[pc] < 0 || loop_top >= MAX_NEST_DEPTH) {
+                case VmOp::Jump:
+                    pc = ins.jump_pc;
+                    break;
+                case VmOp::RepeatBegin:
+                    if (repeat_top >= MAX_NEST_DEPTH) {
                         return false;
                     }
-                    loops[loop_top++] = {pc, step.param};
+                    repeat_stack[repeat_top++] = {pc, ins.param};
                     pc++;
                     break;
-                }
-                case BlockType::End: {
-                    const int8_t start = end_start[pc];
-                    if (start < 0) {
+                case VmOp::RepeatEnd:
+                    if (repeat_top == 0) {
                         return false;
                     }
-                    const auto open_type = s.program[static_cast<uint8_t>(start)].type;
-                    if (open_type == BlockType::Repeat) {
-                        if (loop_top == 0) {
-                            return false;
-                        }
-                        auto& frame = loops[loop_top - 1];
-                        if (frame.start_pc != static_cast<uint8_t>(start)) {
-                            return false;
-                        }
-                        if (frame.remaining > 1) {
-                            frame.remaining--;
-                            pc = static_cast<uint8_t>(frame.start_pc + 1);
-                        } else {
-                            loop_top--;
-                            pc++;
-                        }
-                        break;
-                    }
-                    if (open_type == BlockType::Move) {
-                        if (move_anchor_top == 0) {
-                            return false;
-                        }
-                        move_anchor_top--;
+                    if (repeat_stack[repeat_top - 1].remaining > 1) {
+                        repeat_stack[repeat_top - 1].remaining--;
+                        pc = ins.jump_pc;
+                    } else {
+                        repeat_top--;
                         pc++;
-                        break;
                     }
-                    if (open_type == BlockType::If) {
-                        pc++;
-                        break;
-                    }
-                    return false;
-                }
+                    break;
                 default:
                     return false;
             }
         }
 
+        return repeat_top == 0 && move_anchor_top == 0;
+    }
+
+    bool compileAndRun(ProgramState& s) {
+        finalizeSyntax(s);
+
+        ControlFlowGraph cfg{};
+        if (!buildControlFlowGraph(s, cfg)) {
+            return false;
+        }
+
+        CompiledProgram compiled{};
+        if (!compileProgram(s, cfg, compiled)) {
+            return false;
+        }
+
+        RuntimeState runtime{};
+        if (!executeProgram(s, compiled, runtime)) {
+            return false;
+        }
+
+        s.runtime = runtime;
         return true;
     }
 
@@ -1031,118 +1210,608 @@ namespace {
         return false;
     }
 
-    void drawHeader(const ProgramState& s) {
-        const BlockType t = s.selected_block;
-        const uint8_t shown_param = blockHasParam(t) ? std::max<uint8_t>(minParamForBlock(t), s.selected_param) : 0;
-        const uint8_t param_max = maxParamForBlock(t);
+    namespace ui {
+        constexpr uint16_t LVGL_DRAW_BUFFER_LINES = 24;
+        constexpr size_t LVGL_DRAW_BUFFER_PIXEL_COUNT = static_cast<size_t>(LCD_WIDTH) * LVGL_DRAW_BUFFER_LINES;
+        constexpr size_t LCD_TX_LINE_BUFFER_SIZE = static_cast<size_t>(LCD_WIDTH) * sizeof(lv_color_t);
 
-        Paint_DrawRectangle(4, HEADER_TOP_Y, 236, HEADER_TOP_Y + HEADER_HEIGHT, BLUE, DOT_PIXEL_1X1, DRAW_FILL_EMPTY);
+        struct LvglUiContext {
+            std::array<lv_color_t, LVGL_DRAW_BUFFER_PIXEL_COUNT> lvgl_draw_pixels{};
+            std::array<uint8_t, LCD_TX_LINE_BUFFER_SIZE> lcd_tx_line_buffer{};
+            std::array<lv_point_t, (MAX_MOVES + 2) * 8> flow_line_points{};
+            size_t flow_line_point_count = 0;
+            lv_disp_draw_buf_t lvgl_draw_buf{};
+            lv_disp_drv_t lvgl_disp_drv{};
+        };
 
-        char line1[96];
-        std::snprintf(
-            line1,
-            sizeof(line1),
-            "SEL:%s  P:%u/%u  LINE:%u/%u",
-            blockName(t),
-            shown_param,
-            param_max,
-            static_cast<uint8_t>(s.selected_line + 1),
-            MAX_MOVES
-        );
-        Paint_DrawString_EN(8, HEADER_TOP_Y + 4, line1, &Font12, BLACK, WHITE);
+        LvglUiContext g_lvgl_ui{};
 
-        char line2[96];
-        std::snprintf(
-            line2,
-            sizeof(line2),
-            "A:add B:type X:param Y:run"
-        );
-        Paint_DrawString_EN(8, HEADER_TOP_Y + 20, line2, &Font12, BLACK, WHITE);
+        constexpr lv_coord_t UI_MARGIN = 6;
+        constexpr lv_coord_t UI_CARD_WIDTH = static_cast<lv_coord_t>(LCD_WIDTH - UI_MARGIN * 2);
+        constexpr lv_coord_t UI_HEADER_HEIGHT = 58;
+        constexpr lv_coord_t UI_LIST_Y = static_cast<lv_coord_t>(UI_MARGIN + UI_HEADER_HEIGHT + 4);
+        constexpr lv_coord_t UI_LIST_HEIGHT = static_cast<lv_coord_t>(LCD_HEIGHT - UI_LIST_Y - UI_MARGIN);
+        constexpr lv_coord_t FLOW_NODE_HEIGHT = 34;
+        constexpr lv_coord_t FLOW_NODE_WIDTH = static_cast<lv_coord_t>(UI_CARD_WIDTH - 28);
+        constexpr lv_coord_t FLOW_NODE_X = static_cast<lv_coord_t>((UI_CARD_WIDTH - FLOW_NODE_WIDTH) / 2);
+        constexpr lv_coord_t FLOW_NODE_GAP = 12;
+        constexpr lv_coord_t FLOW_TOP_PADDING = 8;
 
-        if (t == BlockType::Draw || t == BlockType::If) {
-            const UWORD dot_color = paintColorByParam(shown_param);
-            Paint_DrawRectangle(206, HEADER_TOP_Y + 10, 230, HEADER_TOP_Y + 34, BLACK, DOT_PIXEL_1X1, DRAW_FILL_EMPTY);
-            Paint_DrawCircle(218, HEADER_TOP_Y + 22, 8, dot_color, DOT_PIXEL_1X1, DRAW_FILL_FULL);
+        lv_color_t lvColorFromRgb565Fast(uint16_t rgb565) {
+            const uint8_t r = static_cast<uint8_t>(((rgb565 >> 11) & 0x1F) * 255 / 31);
+            const uint8_t g = static_cast<uint8_t>(((rgb565 >> 5) & 0x3F) * 255 / 63);
+            const uint8_t b = static_cast<uint8_t>((rgb565 & 0x1F) * 255 / 31);
+            return lv_color_make(r, g, b);
         }
-    }
 
-    void drawProgramList(const ProgramState& s) {
-        for (uint8_t row = 0; row < LIST_VISIBLE; row++) {
-            const auto idx = static_cast<uint8_t>(s.scroll_top + row);
-            const auto y = static_cast<uint16_t>(LIST_TOP_Y + row * LIST_ROW_H);
-            if (idx >= MAX_MOVES) {
-                break;
+        lv_color_t blockAccentColor(BlockType t) {
+            switch (t) {
+                case BlockType::Move:
+                    return lv_color_hex(0x2F80ED);
+                case BlockType::Draw:
+                    return lv_color_hex(0x14A44D);
+                case BlockType::If:
+                    return lv_color_hex(0xA95DF5);
+                case BlockType::Else:
+                    return lv_color_hex(0xE056FD);
+                case BlockType::Repeat:
+                    return lv_color_hex(0xF39C12);
+                case BlockType::End:
+                    return lv_color_hex(0x6C757D);
+                case BlockType::None:
+                default:
+                    return lv_color_hex(0x343A40);
+            }
+        }
+
+        const char* turnName(TurnState t) {
+            switch (t) {
+                case TurnState::PlayerTurn:
+                    return "PLAYER";
+                case TurnState::AITurn:
+                    return "AI";
+                case TurnState::SelectInputColor:
+                    return "INPUT COLOR";
+                case TurnState::RunProgram:
+                    return "RUN";
+                case TurnState::Finished:
+                    return "DONE";
+                default:
+                    return "-";
+            }
+        }
+
+        void styleCard(lv_obj_t* obj, lv_color_t bg, lv_color_t border) {
+            lv_obj_set_style_bg_color(obj, bg, 0);
+            lv_obj_set_style_bg_opa(obj, LV_OPA_COVER, 0);
+            lv_obj_set_style_border_color(obj, border, 0);
+            lv_obj_set_style_border_width(obj, 1, 0);
+            lv_obj_set_style_radius(obj, 6, 0);
+            lv_obj_set_style_pad_all(obj, 4, 0);
+        }
+
+        void createColorSwatch(lv_obj_t* parent, lv_coord_t x, lv_coord_t y, uint8_t param, lv_coord_t size) {
+            auto* swatch = lv_obj_create(parent);
+            lv_obj_set_size(swatch, size, size);
+            lv_obj_set_pos(swatch, x, y);
+            lv_obj_set_style_radius(swatch, LV_RADIUS_CIRCLE, 0);
+            lv_obj_set_style_bg_color(swatch, lvColorFromRgb565Fast(paintColorByParam(param)), 0);
+            lv_obj_set_style_bg_opa(swatch, LV_OPA_COVER, 0);
+            lv_obj_set_style_border_width(swatch, 1, 0);
+            lv_obj_set_style_border_color(swatch, lv_color_hex(0x222222), 0);
+            lv_obj_set_style_pad_all(swatch, 0, 0);
+            lv_obj_clear_flag(swatch, LV_OBJ_FLAG_SCROLLABLE);
+        }
+
+        lv_point_t* reserveLinePoints(size_t count) {
+            if (g_lvgl_ui.flow_line_point_count + count > g_lvgl_ui.flow_line_points.size()) {
+                return nullptr;
+            }
+            auto* ptr = &g_lvgl_ui.flow_line_points[g_lvgl_ui.flow_line_point_count];
+            g_lvgl_ui.flow_line_point_count += count;
+            return ptr;
+        }
+
+        void styleFlowLine(lv_obj_t* line, lv_color_t color, uint8_t width) {
+            lv_obj_set_style_line_color(line, color, 0);
+            lv_obj_set_style_line_width(line, width, 0);
+            lv_obj_set_style_line_opa(line, LV_OPA_COVER, 0);
+            lv_obj_set_style_line_rounded(line, true, 0);
+        }
+
+        void drawFlowConnector(lv_obj_t* parent, lv_coord_t x, lv_coord_t top, lv_coord_t bottom) {
+            auto* pts = reserveLinePoints(2);
+            if (pts == nullptr) {
+                return;
+            }
+            pts[0] = {x, top};
+            pts[1] = {x, bottom};
+            auto* line = lv_line_create(parent);
+            lv_line_set_points(line, pts, 2);
+            styleFlowLine(line, lv_color_hex(0x7A8795), 2);
+            lv_obj_clear_flag(line, LV_OBJ_FLAG_SCROLLABLE);
+        }
+
+        uint8_t flowItemCount(const ProgramState& s) {
+            return static_cast<uint8_t>(std::min<uint8_t>(MAX_MOVES + 1, static_cast<uint8_t>(s.move_count + 1)));
+        }
+
+        uint8_t focusFlowIndex(const ProgramState& s) {
+            if (s.move_count == 0) {
+                return 0;
+            }
+            return static_cast<uint8_t>(std::min<uint8_t>(s.move_count, static_cast<uint8_t>(s.selected_line + 1)));
+        }
+
+        uint8_t visibleFlowCount() {
+            const lv_coord_t row_space = static_cast<lv_coord_t>(FLOW_NODE_HEIGHT + FLOW_NODE_GAP);
+            const lv_coord_t available = static_cast<lv_coord_t>(UI_LIST_HEIGHT - FLOW_TOP_PADDING + FLOW_NODE_GAP);
+            const lv_coord_t rows = available / row_space;
+            const lv_coord_t safe_rows = std::max<lv_coord_t>(1, rows);
+            return static_cast<uint8_t>(std::min<lv_coord_t>(safe_rows, MAX_MOVES + 1));
+        }
+
+        uint8_t flowTopIndex(const ProgramState& s) {
+            const uint8_t total = flowItemCount(s);
+            const uint8_t visible = visibleFlowCount();
+            if (total <= visible) {
+                return 0;
+            }
+            const uint8_t focus = focusFlowIndex(s);
+            if (focus + 1 <= visible) {
+                return 0;
+            }
+            const uint8_t max_top = static_cast<uint8_t>(total - visible);
+            const uint8_t wanted = static_cast<uint8_t>(focus + 1 - visible);
+            return std::min<uint8_t>(wanted, max_top);
+        }
+
+        ProgramStep flowStep(const ProgramState& s, uint8_t flow_index) {
+            if (flow_index == 0) {
+                ProgramStep start{};
+                start.type = BlockType::None;
+                start.param = 0;
+                start.from_ai = false;
+                return start;
+            }
+            return s.program[flow_index - 1];
+        }
+
+        uint8_t shownParam(const ProgramState& s, const ProgramStep& step, uint8_t flow_index) {
+            if (flow_index == 0 || !blockHasParam(step.type)) {
+                return 0;
+            }
+            if (flow_index != static_cast<uint8_t>(s.selected_line + 1)) {
+                return step.param;
+            }
+            const uint8_t min_param = minParamForBlock(step.type);
+            const uint8_t max_param = maxParamForBlock(step.type);
+            if (s.selected_param < min_param || s.selected_param > max_param) {
+                return min_param;
+            }
+            return s.selected_param;
+        }
+
+        lv_color_t flowColor(const ProgramStep& step, uint8_t flow_index) {
+            if (flow_index == 0) {
+                return lv_color_hex(0x16A34A);
+            }
+            return blockAccentColor(step.type);
+        }
+
+        void addTriangle(lv_obj_t* parent, lv_coord_t x, lv_coord_t y, lv_coord_t size, lv_color_t color, uint8_t width) {
+            auto* pts = reserveLinePoints(4);
+            if (pts == nullptr) {
+                return;
+            }
+            const lv_coord_t max = static_cast<lv_coord_t>(size - 2);
+            const lv_coord_t half = static_cast<lv_coord_t>(size / 2);
+            pts[0] = {1, max};
+            pts[1] = {half, 1};
+            pts[2] = {max, max};
+            pts[3] = {1, max};
+            auto* line = lv_line_create(parent);
+            lv_line_set_points(line, pts, 4);
+            lv_obj_set_pos(line, x, y);
+            styleFlowLine(line, color, width);
+            lv_obj_clear_flag(line, LV_OBJ_FLAG_SCROLLABLE);
+        }
+
+        void addDiamond(lv_obj_t* parent, lv_coord_t x, lv_coord_t y, lv_coord_t size, lv_color_t color, uint8_t width) {
+            auto* pts = reserveLinePoints(5);
+            if (pts == nullptr) {
+                return;
+            }
+            const lv_coord_t max = static_cast<lv_coord_t>(size - 2);
+            const lv_coord_t half = static_cast<lv_coord_t>(size / 2);
+            pts[0] = {half, 1};
+            pts[1] = {max, half};
+            pts[2] = {half, max};
+            pts[3] = {1, half};
+            pts[4] = {half, 1};
+            auto* line = lv_line_create(parent);
+            lv_line_set_points(line, pts, 5);
+            lv_obj_set_pos(line, x, y);
+            styleFlowLine(line, color, width);
+            lv_obj_clear_flag(line, LV_OBJ_FLAG_SCROLLABLE);
+        }
+
+        void styleShape(lv_obj_t* obj, lv_coord_t x, lv_coord_t y, lv_coord_t size, lv_color_t color, bool selected, lv_coord_t radius) {
+            lv_obj_set_pos(obj, x, y);
+            lv_obj_set_size(obj, size, size);
+            lv_obj_set_style_radius(obj, radius, 0);
+            lv_obj_set_style_bg_color(obj, color, 0);
+            lv_obj_set_style_bg_opa(obj, selected ? LV_OPA_30 : LV_OPA_20, 0);
+            lv_obj_set_style_border_color(obj, color, 0);
+            lv_obj_set_style_border_width(obj, selected ? 3 : 2, 0);
+            lv_obj_set_style_pad_all(obj, 0, 0);
+            lv_obj_clear_flag(obj, LV_OBJ_FLAG_SCROLLABLE);
+        }
+
+        void addNodeSymbol(
+            lv_obj_t* parent,
+            const ProgramStep& step,
+            uint8_t flow_index,
+            lv_color_t color,
+            lv_coord_t x,
+            lv_coord_t y,
+            lv_coord_t size,
+            bool selected
+        ) {
+            const uint8_t line_width = selected ? 3 : 2;
+            if (flow_index == 0) {
+                auto* circle = lv_obj_create(parent);
+                styleShape(circle, x, y, size, color, selected, LV_RADIUS_CIRCLE);
+                return;
             }
 
-            const bool is_selected = (idx == s.selected_line);
-            Paint_DrawRectangle(8, y - 1, 232, y + LIST_ROW_H - 3, is_selected ? GREEN : GRAY, DOT_PIXEL_1X1, DRAW_FILL_EMPTY);
+            switch (step.type) {
+                case BlockType::Move: {
+                    auto* rect = lv_obj_create(parent);
+                    styleShape(rect, x, y, size, color, selected, 2);
+                    break;
+                }
+                case BlockType::Draw:
+                    addTriangle(parent, x, y, size, color, line_width);
+                    break;
+                case BlockType::If:
+                    addDiamond(parent, x, y, size, color, line_width);
+                    break;
+                case BlockType::Else: {
+                    auto* alt = lv_obj_create(parent);
+                    styleShape(alt, x, y, size, color, selected, 8);
+                    auto* mark = lv_label_create(alt);
+                    lv_label_set_text(mark, "E");
+                    lv_obj_set_style_text_color(mark, color, 0);
+                    lv_obj_center(mark);
+                    break;
+                }
+                case BlockType::Repeat: {
+                    auto* loop = lv_obj_create(parent);
+                    styleShape(loop, x, y, size, color, selected, 6);
+                    auto* loop_mark = lv_label_create(loop);
+                    lv_label_set_text(loop_mark, "R");
+                    lv_obj_set_style_text_color(loop_mark, color, 0);
+                    lv_obj_center(loop_mark);
+                    break;
+                }
+                case BlockType::End:
+                case BlockType::None:
+                default: {
+                    auto* end = lv_obj_create(parent);
+                    styleShape(end, x, y, size, color, selected, LV_RADIUS_CIRCLE);
+                    break;
+                }
+            }
+        }
 
-            if (idx >= s.move_count) {
-                Paint_DrawString_EN(12, y + 2, "[empty]", &Font12, BLACK, WHITE);
-                continue;
+        void drawMain(const ProgramState& s) {
+            g_lvgl_ui.flow_line_point_count = 0;
+
+            auto* scr = lv_scr_act();
+            lv_obj_clean(scr);
+            lv_obj_set_style_bg_color(scr, lv_color_hex(0xEEF3F9), 0);
+            lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+
+            const BlockType t = s.selected_block;
+            const uint8_t shown_param = blockHasParam(t) ? std::max<uint8_t>(minParamForBlock(t), s.selected_param) : 0;
+            const uint8_t param_max = maxParamForBlock(t);
+
+            auto* header = lv_obj_create(scr);
+            lv_obj_set_pos(header, UI_MARGIN, UI_MARGIN);
+            lv_obj_set_size(header, UI_CARD_WIDTH, UI_HEADER_HEIGHT);
+            styleCard(header, lv_color_hex(0xFFFFFF), blockAccentColor(t));
+            lv_obj_clear_flag(header, LV_OBJ_FLAG_SCROLLABLE);
+
+            auto* title = lv_label_create(header);
+            lv_label_set_text_fmt(title, "SEL:%s  P:%u/%u", blockName(t), shown_param, param_max);
+            lv_obj_set_pos(title, 6, 6);
+
+            auto* subtitle = lv_label_create(header);
+            lv_label_set_text_fmt(subtitle, "TURN:%s", turnName(s.turn));
+            lv_obj_set_pos(subtitle, 6, 24);
+
+            auto* controls = lv_label_create(header);
+            lv_label_set_text(controls, "A:add  B:type  X:param  Y:run");
+            lv_obj_set_pos(controls, 6, 40);
+
+            if (t == BlockType::Draw || t == BlockType::If) {
+                createColorSwatch(header, UI_CARD_WIDTH - 28, 18, shown_param, 18);
             }
 
-            const auto& step = s.program[idx];
-            const auto indent_x = static_cast<uint16_t>(LIST_START_X + s.view_depths[idx] * INDENT_STEP);
-            char line[72];
-            std::snprintf(
-                line,
-                sizeof(line),
-                "%s(%u)%s",
-                blockName(step.type),
-                step.param,
-                step.from_ai ? " [AI]" : ""
+            auto* flow = lv_obj_create(scr);
+            lv_obj_set_pos(flow, UI_MARGIN, UI_LIST_Y);
+            lv_obj_set_size(flow, UI_CARD_WIDTH, UI_LIST_HEIGHT);
+            styleCard(flow, lv_color_hex(0xFFFFFF), lv_color_hex(0xC5D1DE));
+            lv_obj_set_scrollbar_mode(flow, LV_SCROLLBAR_MODE_OFF);
+            lv_obj_clear_flag(flow, LV_OBJ_FLAG_SCROLLABLE);
+
+            constexpr lv_coord_t COL_GAP = 8;
+            constexpr lv_coord_t INNER_X = 4;
+            const lv_coord_t inner_w = static_cast<lv_coord_t>(UI_CARD_WIDTH - INNER_X * 2);
+            const lv_coord_t left_w = static_cast<lv_coord_t>((inner_w - COL_GAP) / 2);
+            const lv_coord_t right_w = static_cast<lv_coord_t>(inner_w - left_w - COL_GAP);
+            const lv_coord_t left_x = INNER_X;
+            const lv_coord_t right_x = static_cast<lv_coord_t>(left_x + left_w + COL_GAP);
+            const lv_coord_t shape_size = 24;
+            const lv_coord_t center_x = static_cast<lv_coord_t>(left_x + left_w / 2);
+
+            auto* divider_pts = reserveLinePoints(2);
+            if (divider_pts != nullptr) {
+                divider_pts[0] = {static_cast<lv_coord_t>(left_x + left_w + COL_GAP / 2), 4};
+                divider_pts[1] = {static_cast<lv_coord_t>(left_x + left_w + COL_GAP / 2), static_cast<lv_coord_t>(UI_LIST_HEIGHT - 6)};
+                auto* divider = lv_line_create(flow);
+                lv_line_set_points(divider, divider_pts, 2);
+                styleFlowLine(divider, lv_color_hex(0xD8E0EA), 1);
+                lv_obj_clear_flag(divider, LV_OBJ_FLAG_SCROLLABLE);
+            }
+
+            const uint8_t total = flowItemCount(s);
+            const uint8_t visible = visibleFlowCount();
+            const uint8_t top = flowTopIndex(s);
+            const uint8_t end = static_cast<uint8_t>(std::min<uint16_t>(total, static_cast<uint16_t>(top + visible)));
+            const uint8_t focus = focusFlowIndex(s);
+
+            bool has_prev = false;
+            lv_coord_t prev_bottom = 0;
+            for (uint8_t flow_idx = top; flow_idx < end; flow_idx++) {
+                const uint8_t row = static_cast<uint8_t>(flow_idx - top);
+                const lv_coord_t row_y = static_cast<lv_coord_t>(FLOW_TOP_PADDING + row * (FLOW_NODE_HEIGHT + FLOW_NODE_GAP));
+                const lv_coord_t symbol_y = static_cast<lv_coord_t>(row_y + (FLOW_NODE_HEIGHT - shape_size) / 2);
+                const lv_coord_t symbol_x = static_cast<lv_coord_t>(center_x - shape_size / 2);
+
+                if (has_prev) {
+                    drawFlowConnector(flow, center_x, prev_bottom, symbol_y);
+                }
+
+                const ProgramStep step = flowStep(s, flow_idx);
+                const lv_color_t accent = flowColor(step, flow_idx);
+                const bool selected = (flow_idx == focus);
+                addNodeSymbol(flow, step, flow_idx, accent, symbol_x, symbol_y, shape_size, selected);
+
+                const lv_coord_t info_y = row_y;
+                if (selected) {
+                    auto* focus_box = lv_obj_create(flow);
+                    lv_obj_set_pos(focus_box, right_x, info_y);
+                    lv_obj_set_size(focus_box, right_w, FLOW_NODE_HEIGHT);
+                    lv_obj_set_style_radius(focus_box, 4, 0);
+                    lv_obj_set_style_pad_all(focus_box, 0, 0);
+                    lv_obj_set_style_bg_color(focus_box, lv_color_hex(0xEAF3FF), 0);
+                    lv_obj_set_style_bg_opa(focus_box, LV_OPA_COVER, 0);
+                    lv_obj_set_style_border_color(focus_box, accent, 0);
+                    lv_obj_set_style_border_width(focus_box, 1, 0);
+                    lv_obj_clear_flag(focus_box, LV_OBJ_FLAG_SCROLLABLE);
+                }
+
+                auto* info_title = lv_label_create(flow);
+                if (flow_idx == 0) {
+                    lv_label_set_text_fmt(info_title, "%sRun", selected ? "> " : "");
+                } else {
+                    lv_label_set_text_fmt(info_title, "%s%s", selected ? "> " : "", blockName(step.type));
+                }
+                lv_obj_set_pos(info_title, static_cast<lv_coord_t>(right_x + 4), static_cast<lv_coord_t>(info_y + 2));
+
+                auto* info_detail = lv_label_create(flow);
+                if (flow_idx == 0) {
+                    lv_label_set_text(info_detail, "start node");
+                } else {
+                    const uint8_t param = shownParam(s, step, flow_idx);
+                    if (blockHasParam(step.type)) {
+                        lv_label_set_text_fmt(info_detail, "param:%u/%u%s", param, maxParamForBlock(step.type), step.from_ai ? " [AI]" : "");
+                    } else {
+                        lv_label_set_text_fmt(info_detail, "%s", step.from_ai ? "[AI]" : "no param");
+                    }
+                    if (step.type == BlockType::Draw || step.type == BlockType::If) {
+                        createColorSwatch(flow, static_cast<lv_coord_t>(right_x + right_w - 12), static_cast<lv_coord_t>(info_y + 11), param, 10);
+                    }
+                }
+                lv_obj_set_pos(info_detail, static_cast<lv_coord_t>(right_x + 4), static_cast<lv_coord_t>(info_y + 18));
+
+                prev_bottom = static_cast<lv_coord_t>(symbol_y + shape_size);
+                has_prev = true;
+            }
+        }
+
+        void drawColorSelect(const ProgramState& s) {
+            auto* scr = lv_scr_act();
+            lv_obj_clean(scr);
+            lv_obj_set_style_bg_color(scr, lv_color_hex(0xEEF3F9), 0);
+            lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+
+            auto* panel = lv_obj_create(scr);
+            lv_obj_set_pos(panel, UI_MARGIN, UI_MARGIN);
+            lv_obj_set_size(panel, UI_CARD_WIDTH, static_cast<lv_coord_t>(LCD_HEIGHT - UI_MARGIN * 2));
+            styleCard(panel, lv_color_hex(0xFFFFFF), lv_color_hex(0xA95DF5));
+
+            auto* title = lv_label_create(panel);
+            lv_label_set_text(title, "Select IF input color");
+            lv_obj_set_pos(title, 8, 10);
+
+            auto* hint = lv_label_create(panel);
+            lv_label_set_text(hint, "X:next  Y:start  A:back");
+            lv_obj_set_pos(hint, 8, 32);
+
+            auto* dot_holder = lv_obj_create(panel);
+            lv_obj_set_size(dot_holder, 90, 90);
+            lv_obj_set_pos(dot_holder, static_cast<lv_coord_t>((UI_CARD_WIDTH - 90) / 2), 62);
+            lv_obj_set_style_radius(dot_holder, LV_RADIUS_CIRCLE, 0);
+            lv_obj_set_style_bg_color(dot_holder, lv_color_hex(0xF5F7FA), 0);
+            lv_obj_set_style_border_color(dot_holder, lv_color_hex(0xCED8E3), 0);
+            lv_obj_set_style_border_width(dot_holder, 1, 0);
+            lv_obj_set_style_pad_all(dot_holder, 0, 0);
+
+            createColorSwatch(dot_holder, 25, 25, s.run_input_color, 40);
+
+            auto* selected = lv_label_create(panel);
+            lv_label_set_text_fmt(selected, "COLOR PARAM: %u", s.run_input_color);
+            lv_obj_set_pos(selected, static_cast<lv_coord_t>((UI_CARD_WIDTH - 110) / 2), 164);
+
+            auto* note = lv_label_create(panel);
+            lv_label_set_text(note, "IF blocks compare this color.");
+            lv_obj_set_pos(note, 8, 190);
+        }
+
+        void drawRunPreview(const ProgramState& s) {
+            auto* scr = lv_scr_act();
+            lv_obj_clean(scr);
+            lv_obj_set_style_bg_color(scr, lv_color_hex(0xF3F6FA), 0);
+            lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+
+            auto* top = lv_obj_create(scr);
+            lv_obj_set_pos(top, UI_MARGIN, UI_MARGIN);
+            lv_obj_set_size(top, UI_CARD_WIDTH, 36);
+            styleCard(top, lv_color_hex(0xFFFFFF), lv_color_hex(0x14A44D));
+
+            auto* title = lv_label_create(top);
+            lv_label_set_text_fmt(title, "Run Preview  circles:%u", s.runtime.circle_count);
+            lv_obj_set_pos(title, 8, 10);
+
+            constexpr lv_coord_t preview_top = 48;
+            constexpr lv_coord_t preview_w = static_cast<lv_coord_t>(UI_CARD_WIDTH);
+            constexpr lv_coord_t preview_h = 156;
+
+            auto* preview = lv_obj_create(scr);
+            lv_obj_set_pos(preview, UI_MARGIN, preview_top);
+            lv_obj_set_size(preview, preview_w, preview_h);
+            styleCard(preview, lv_color_hex(0xFFFFFF), lv_color_hex(0xC5D1DE));
+            lv_obj_set_style_clip_corner(preview, true, 0);
+            lv_obj_set_style_pad_all(preview, 2, 0);
+            lv_obj_set_scrollbar_mode(preview, LV_SCROLLBAR_MODE_OFF);
+
+            constexpr uint16_t x_span = RESULT_MAX_X - RESULT_MIN_COORD;
+            constexpr uint16_t y_span = RESULT_MAX_Y - RESULT_MIN_COORD;
+            constexpr lv_coord_t usable_w = preview_w - 2 * RESULT_RADIUS - 8;
+            constexpr lv_coord_t usable_h = preview_h - 2 * RESULT_RADIUS - 8;
+
+            for (uint16_t i = 0; i < s.runtime.circle_count; i++) {
+                const auto& c = s.runtime.circles[i];
+                const uint8_t color_idx = c.color % COLOR_COUNT;
+                const uint16_t rel_x = static_cast<uint16_t>(c.x - RESULT_MIN_COORD);
+                const uint16_t rel_y = static_cast<uint16_t>(c.y - RESULT_MIN_COORD);
+                const lv_coord_t px = static_cast<lv_coord_t>(4 + (static_cast<uint32_t>(rel_x) * usable_w) / std::max<uint16_t>(1, x_span));
+                const lv_coord_t py = static_cast<lv_coord_t>(4 + (static_cast<uint32_t>(rel_y) * usable_h) / std::max<uint16_t>(1, y_span));
+
+                auto* dot = lv_obj_create(preview);
+                lv_obj_set_size(dot, static_cast<lv_coord_t>(RESULT_RADIUS * 2), static_cast<lv_coord_t>(RESULT_RADIUS * 2));
+                lv_obj_set_pos(dot, px, py);
+                lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
+                lv_obj_set_style_bg_color(dot, lvColorFromRgb565Fast(kPaintColors[color_idx]), 0);
+                lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
+                lv_obj_set_style_border_width(dot, 1, 0);
+                lv_obj_set_style_border_color(dot, lv_color_hex(0x222222), 0);
+                lv_obj_set_style_pad_all(dot, 0, 0);
+            }
+
+            auto* controls = lv_label_create(scr);
+            lv_label_set_text(controls, "A:new game  X:exit");
+            lv_obj_set_pos(controls, 12, 212);
+        }
+
+        void rebuildScreen(const ProgramState& s) {
+            if (s.turn == TurnState::SelectInputColor) {
+                drawColorSelect(s);
+            } else if (s.turn == TurnState::Finished) {
+                drawRunPreview(s);
+            } else {
+                drawMain(s);
+            }
+        }
+
+        void lvglFlushCallback(lv_disp_drv_t* drv, const lv_area_t* area, lv_color_t* color_p) {
+            auto* ctx = static_cast<LvglUiContext*>(drv->user_data);
+            if (ctx == nullptr) {
+                lv_disp_flush_ready(drv);
+                return;
+            }
+
+            const int32_t x1 = std::max<int32_t>(0, area->x1);
+            const int32_t y1 = std::max<int32_t>(0, area->y1);
+            const int32_t x2 = std::min<int32_t>(LCD_WIDTH - 1, area->x2);
+            const int32_t y2 = std::min<int32_t>(LCD_HEIGHT - 1, area->y2);
+
+            if (x2 < x1 || y2 < y1) {
+                lv_disp_flush_ready(drv);
+                return;
+            }
+
+            const int32_t flush_w = x2 - x1 + 1;
+            const int32_t flush_h = y2 - y1 + 1;
+            const int32_t src_w = area->x2 - area->x1 + 1;
+            const int32_t src_x0 = x1 - area->x1;
+            const int32_t src_y0 = y1 - area->y1;
+
+            LCD_1IN3_SetWindows(
+                static_cast<UWORD>(x1),
+                static_cast<UWORD>(y1),
+                static_cast<UWORD>(x2 + 1),
+                static_cast<UWORD>(y2 + 1)
             );
-            Paint_DrawString_EN(indent_x, y + 2, line, &Font12, BLACK, WHITE);
+            DEV_Digital_Write(LCD_DC_PIN, 1);
+            DEV_Digital_Write(LCD_CS_PIN, 0);
 
-            if (step.type == BlockType::Draw || step.type == BlockType::If) {
-                const UWORD dot_color = paintColorByParam(step.param);
-                constexpr uint16_t swatch_left = 210;
-                const auto swatch_top = static_cast<uint16_t>(y + 2);
-                constexpr uint16_t dot_x = 220;
-                const auto dot_y = static_cast<uint16_t>(y + 8);
-                Paint_DrawRectangle(swatch_left, swatch_top, 230, static_cast<uint16_t>(y + 14), BLACK, DOT_PIXEL_1X1, DRAW_FILL_EMPTY);
-                Paint_DrawCircle(dot_x, dot_y, 4, dot_color, DOT_PIXEL_1X1, DRAW_FILL_FULL);
+            for (int32_t row = 0; row < flush_h; row++) {
+                const lv_color_t* src = color_p + (src_y0 + row) * src_w + src_x0;
+                auto* tx = ctx->lcd_tx_line_buffer.data();
+                for (int32_t col = 0; col < flush_w; col++) {
+                    const uint16_t color = src[col].full;
+                    tx[col * 2] = static_cast<uint8_t>(color >> 8);
+                    tx[col * 2 + 1] = static_cast<uint8_t>(color & 0xFF);
+                }
+                DEV_SPI_Write_nByte(tx, static_cast<uint32_t>(flush_w * 2));
+            }
+            DEV_Digital_Write(LCD_CS_PIN, 1);
+
+            lv_disp_flush_ready(drv);
+        }
+
+        void initLvglDisplay() {
+            lv_init();
+
+            lv_disp_draw_buf_init(
+                &g_lvgl_ui.lvgl_draw_buf,
+                g_lvgl_ui.lvgl_draw_pixels.data(),
+                nullptr,
+                static_cast<uint32_t>(g_lvgl_ui.lvgl_draw_pixels.size())
+            );
+
+            lv_disp_drv_init(&g_lvgl_ui.lvgl_disp_drv);
+            g_lvgl_ui.lvgl_disp_drv.hor_res = LCD_WIDTH;
+            g_lvgl_ui.lvgl_disp_drv.ver_res = LCD_HEIGHT;
+            g_lvgl_ui.lvgl_disp_drv.flush_cb = lvglFlushCallback;
+            g_lvgl_ui.lvgl_disp_drv.draw_buf = &g_lvgl_ui.lvgl_draw_buf;
+            g_lvgl_ui.lvgl_disp_drv.user_data = &g_lvgl_ui;
+            lv_disp_drv_register(&g_lvgl_ui.lvgl_disp_drv);
+        }
+
+        void updateLvglTick(uint32_t elapsed_ms) {
+            if (elapsed_ms > 0) {
+                lv_tick_inc(elapsed_ms);
             }
         }
-    }
 
-    void drawRunPreview(const ProgramState& s) {
-        Paint_Clear(WHITE);
-        Paint_DrawString_EN(4, 4, "Run Preview", &Font16, BLACK, WHITE);
-        for (uint16_t i = 0; i < s.runtime.circle_count; i++) {
-            const auto& c = s.runtime.circles[i];
-            Paint_DrawCircle(c.x, c.y, RESULT_RADIUS, kPaintColors[c.color], DOT_PIXEL_1X1, DRAW_FILL_FULL);
+        void runLvglTasks() {
+            lv_timer_handler();
         }
-
-        char line[96];
-        std::snprintf(line, sizeof(line), "circles:%u", s.runtime.circle_count);
-        Paint_DrawString_EN(4, 220, line, &Font12, BLACK, WHITE);
-    }
-
-    void drawMainScene(const ProgramState& s) {
-        if (s.turn == TurnState::Finished) {
-            drawRunPreview(s);
-            return;
-        }
-        Paint_Clear(WHITE);
-        drawHeader(s);
-        drawProgramList(s);
-    }
-
-    void drawColorSelectScene(const ProgramState& s) {
-        Paint_Clear(WHITE);
-        Paint_DrawString_EN(4, 4, "Select Input Color", &Font16, BLACK, WHITE);
-        Paint_DrawString_EN(8, 34, "X:next color  Y:start  A:back", &Font12, BLACK, WHITE);
-        Paint_DrawString_EN(8, 56, "IF compares this color", &Font12, BLACK, WHITE);
-
-        const UWORD c = paintColorByParam(s.run_input_color);
-        Paint_DrawRectangle(84, 86, 156, 158, BLACK, DOT_PIXEL_1X1, DRAW_FILL_EMPTY);
-        Paint_DrawCircle(120, 122, 24, c, DOT_PIXEL_1X1, DRAW_FILL_FULL);
-
-        char line[64];
-        std::snprintf(line, sizeof(line), "selected color param: %u", s.run_input_color);
-        Paint_DrawString_EN(8, 176, line, &Font12, BLACK, WHITE);
     }
 
 }
@@ -1154,20 +1823,9 @@ int LCD() {
     DEV_SET_PWM(50);
     printf("1.3inch LCD init...\r\n");
     LCD_1IN3_Init(HORIZONTAL);
-    LCD_1IN3_Clear(WHITE);
-
-    UDOUBLE imagesize = LCD_1IN3_HEIGHT * LCD_1IN3_WIDTH * 2;
-    auto* black_image = static_cast<UWORD*>(malloc(imagesize));
-    if (black_image == nullptr) {
-        printf("Failed to allocate LCD memory\r\n");
-        DEV_Module_Exit();
-        return -1;
-    }
-
-    Paint_NewImage(reinterpret_cast<UBYTE*>(black_image), LCD_1IN3.WIDTH, LCD_1IN3.HEIGHT, 0, WHITE);
-    Paint_SetScale(65);
-    Paint_Clear(WHITE);
+    LCD_1IN3_Clear(RGB565_WHITE);
     hardware::initInfraredPins();
+    ui::initLvglDisplay();
     startYdfWorker();
 
     ProgramState state;
@@ -1175,7 +1833,13 @@ int LCD() {
 
     bool running = true;
     bool needs_redraw = true;
+    uint32_t last_tick_ms = to_ms_since_boot(get_absolute_time());
     while (running) {
+        const uint32_t now_ms = to_ms_since_boot(get_absolute_time());
+        ui::updateLvglTick(now_ms - last_tick_ms);
+        last_tick_ms = now_ms;
+        ui::runLvglTasks();
+
         if (state.turn == TurnState::PlayerTurn) {
             const bool changed = handlePlayerInput(state);
             if (state.move_count >= MAX_MOVES && state.turn == TurnState::PlayerTurn) {
@@ -1190,8 +1854,8 @@ int LCD() {
             }
 
             if (changed || needs_redraw) {
-                drawMainScene(state);
-                LCD_1IN3_Display(black_image);
+                ui::rebuildScreen(state);
+                ui::runLvglTasks();
                 needs_redraw = false;
             }
             sleep_ms(12);
@@ -1206,8 +1870,8 @@ int LCD() {
                 continue;
             }
             if (changed || needs_redraw) {
-                drawColorSelectScene(state);
-                LCD_1IN3_Display(black_image);
+                ui::rebuildScreen(state);
+                ui::runLvglTasks();
                 needs_redraw = false;
             }
             sleep_ms(12);
@@ -1216,8 +1880,8 @@ int LCD() {
 
         if (state.turn == TurnState::AITurn) {
             performAITurn(state);
-            drawMainScene(state);
-            LCD_1IN3_Display(black_image);
+            ui::rebuildScreen(state);
+            ui::runLvglTasks();
             needs_redraw = false;
             sleep_ms(180);
             continue;
@@ -1230,8 +1894,8 @@ int LCD() {
         }
 
         if (needs_redraw) {
-            drawMainScene(state);
-            LCD_1IN3_Display(black_image);
+            ui::rebuildScreen(state);
+            ui::runLvglTasks();
             needs_redraw = false;
         }
 
@@ -1247,7 +1911,6 @@ int LCD() {
         }
     }
 
-    free(black_image);
     stopYdfWorker();
     DEV_Module_Exit();
     return 0;

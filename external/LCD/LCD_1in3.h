@@ -44,6 +44,7 @@ function:
 ********************************************************************************/
 void LCD_1IN3_Init(UBYTE Scan_dir);
 void LCD_1IN3_Clear(UWORD Color);
+void LCD_1IN3_SetWindows(UWORD Xstart, UWORD Ystart, UWORD Xend, UWORD Yend);
 void LCD_1IN3_Display(UWORD *Image);
 void LCD_1IN3_DisplayWindows(UWORD Xstart, UWORD Ystart, UWORD Xend, UWORD Yend, UWORD *Image);
 void LCD_1IN3_DisplayPoint(UWORD X, UWORD Y, UWORD Color);

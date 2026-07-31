@@ -41,6 +41,26 @@ pico_add_extra_outputs(coBroc)
 include(pico_sdk_import.cmake)
 include(FetchContent)
 
+set(LV_CONF_PATH "${CMAKE_CURRENT_LIST_DIR}/lv_conf.h" CACHE STRING "LVGL config header path")
+
+if (EXISTS "${CMAKE_CURRENT_LIST_DIR}/external/lvgl/CMakeLists.txt")
+    add_subdirectory(external/lvgl)
+else()
+    FetchContent_Declare(
+            lvgl
+            URL https://github.com/lvgl/lvgl/archive/refs/tags/v8.3.11.tar.gz
+    )
+    FetchContent_MakeAvailable(lvgl)
+endif()
+
+if (TARGET lvgl_examples)
+    set_target_properties(lvgl_examples PROPERTIES EXCLUDE_FROM_ALL TRUE)
+endif()
+
+if (TARGET lvgl_demos)
+    set_target_properties(lvgl_demos PROPERTIES EXCLUDE_FROM_ALL TRUE)
+endif()
+
 # Add the standard library to the build
 target_link_libraries(coBroc PRIVATE
         pico_stdlib
@@ -49,6 +69,7 @@ target_link_libraries(coBroc PRIVATE
         hardware_timer
         hardware_adc
         hardware_spi
+        lvgl
         LCD
         GUI
         Fonts
