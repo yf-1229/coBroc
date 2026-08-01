@@ -1,0 +1,7 @@
+# Web build artifacts (Vite + Emscripten)
+web/node_modules/
+web/dist/
+web/public/coBrocWeb.js
+web/public/coBrocWeb.wasm
+web/public/coBrocWeb.html
+web/build-emscripten/

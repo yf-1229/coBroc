@@ -206,3 +206,177 @@
 - done: 左右分割の中央に縦の区切り線を追加し、視認性を改善。
 - done: 選択中行は右カラムにハイライト表示を追加。
 - done: `cmake-build-debug` で `coBroc` ビルド成功を確認。
+
+# WEB移植計画
+
+## 方針
+
+- 技術方式: Emscripten/WASM で C++ コア + YDFモデルを再利用し、UI は JS(Canvas + DOM)で実装
+- UI: レスポンシブな現代UI(Pico 240x240 の忠実再現ではなく Web 向け再設計)
+- 追加機能: セーブ/ロード、リプレイ(ローカル完結、localStorage)
+- デプロイ: GitHub Pages 等の静的ホスティング
+- ディレクトリ: `core/`(Pico/Web 共通ロジック) + `web/`(Web 版一式)
+
+## TODO-Web01(コア抽出)
+
+- `core/` に Pico 非依存のゲームロジックを分離し、Pico と Web の両方から共有する。
+  - `core/coBroc_core.h` / `core/coBroc_core.cpp`: 全型・定数・ゲームロジック(合法判定/VM/AI採点/フロー演算)
+  - `core/model.h`: `coBroc::ydf` ラッパー(YDF standalone ヘッダ)を `main.h` から移設
+  - `core/wasm_api.h` / `core/wasm_api.cpp`: Web 用 C ABI(スナップショット/シリアライズは Phase 2 で実装)
+  - `core/test/core_test.cpp`: ホスト決定論テスト(固定シードで3+1シナリオを実行し FNV-1a ハッシュを出力)
+- 乱数をグローバルから `ProgramState.rng_seed` へ状態化(リプレイの決定論化)。実行時は `mt19937(seed)` を生成して使用。
+- AI 予測を `g_predictor_fn` 関数ポインタ経由に変更。Pico は core1 バッチ予測(既存動作維持)、WASM は同期直実行。
+- `main.cpp` は LVGL UI・赤外線入力・YDF マルチコアワーカー等の Pico 依存のみを保持し、ロジックは `core::` を参照。
+
+### TODO-Web01 実装結果
+
+- done: `core/` 抽出完了。`main.cpp` は UI/ハードウェア/ワーカーのみに縮小。
+- done: 決定論テスト実装。4シナリオ(盤面満杯エッジケース / Draw多め / Move多め / 途中Y実行+finalize)を2回実行し出力一致を確認。
+  - ハッシュベースライン: structured=32C4A949, draws=88DF6A01, moves=2737E23F, short-run=A2D353D8
+- done: `wasm_api.cpp` のホスト(g++)コンパイル/リンク検証。
+- done: `web/` に Vite + TypeScript の雛形を作成(`npm run build` 成功)。
+- done: Pico `cmake-build-debug` / `cmake-build-release` の両方でビルド成功。
+
+## TODO-Web02(WASMビルド)
+
+- `web/CMakeLists.txt` を Emscripten 用に構成し `cobroc_*` ABI をエクスポートする。
+- `core/wasm_api.cpp` にスナップショットJSON / シリアライズ(base64)を実装する。
+- ネイティブ(g++)と WASM で同一シードのゲームを実行し、ハッシュが一致することを確認(パリティ検証)。
+
+### TODO-Web02 実装結果
+
+- done: Emscripten SDK 3.1.69 を `~/emsdk` に導入し activate。
+- done: `web/CMakeLists.txt` 完成。
+  - emcc は `-s NAME=VALUE`(スペース)を単一引数で渡すと**無視**されるため `-sNAME=VALUE` 形式に統一。
+  - `-s` フラグはリンク時のみ有効(clang++ コンパイル時は `-O3` のみ)。
+  - 出力: `web/public/coBrocWeb.js` + `coBrocWeb.wasm`(Vite が dist/ へ自動コピー)。
+- done: `core/wasm_api.cpp` にスナップショットJSON v1 / シリアライズ(base64, 契約書セクション4のバイナリ形式)を実装。
+  - ABI 追加: `cobroc_select_input_color`(PlayerTurn→color_select、実機の Y キー相当)。
+- done: RNG 移植性対応。`std::uniform_int_distribution` は libstdc++/libc++ で乱数消費量が異なり
+  WASM とネイティブで結果が乖離したため、`rng() % range` の剰余法に置換。
+  - ネイティブと WASM で**バイト単位一致**を確認(4シナリオ)。
+  - 最終ハッシュ: structured=32C4A949, draws=7810D9F8, moves=2737E23F, short-run=1B6EECC7
+- done: パリティ検証(`core/test/core_test.cpp` をネイティブ/WASM両方で実行し diff)。
+- done: ABI スモークテスト(`core/abi_test.cpp` + Node 経由)21項目パス。
+- done: 実 WASM モジュールを Node でロードし全 ABI 呼び出し検証(`/tmp` スモーク、16項目パス)。
+
+## TODO-Web03(フロントエンド)
+
+- Vite + TypeScript で UI を実装する。
+- WASM ローダー(実モジュール優先、無ければモック)、Canvas 描画、操作UI、
+  ゲームループ、セーブ/ロード(localStorage)、リプレイを実装する。
+
+### TODO-Web03 実装結果
+
+- done: `web/src/wasm/types.ts` — スナップショット/ABI/リプレイの型定義(契約書準拠)。
+- done: `web/src/wasm/loader.ts` — script タグで `coBrocWeb.js` をロードし
+  `window.CoBrocModule({locateFile})` から ABI をラップ。失敗時はモックへフォールバック。
+- done: `web/src/wasm/mock.ts` — 契約準拠のモック(実 WASM 無しでも動作)。
+- done: `web/src/ui/render.ts` — Canvas 2D 描画(フローチャート左図形/右情報、
+  色選択、結果円、devicePixelRatio・レスポンシブ対応)。
+- done: `web/src/ui/controls` 相当は `index.html` のボタン + `main.ts` で結線
+  (A:add / B:type / X:param・色変更 / Y:run・色選択開始 / N:new / R:replay / S:save)。
+- done: `web/src/main.ts` — ゲームループ。ターン遷移規約に従い AI ターンは自動実行、
+  満杯時は自動 run、色選択画面の操作を実装。AI ターンに 350ms の思考演出。
+- done: `web/src/storage.ts` — localStorage オートセーブ(毎ターン)、
+  セーブファイルのエクスポート/インポート(JSON)。
+- done: `web/src/replay.ts` — 操作ログ記録(seed + actions)と決定的リプレイ再生(速度制御)。
+- done: E2E テスト(ヘッドレス Chrome + puppeteer-core)12項目パス:
+  WASM ロード / ターン遷移 / ブロック操作 / 色選択→実行→結果描画 / リプレイ / オートセーブ / 新規ゲーム。
+
+## TODO-Web04(デプロイ)
+
+- GitHub Pages への自動デプロイワークフローを作成する。
+
+### TODO-Web04 実装結果
+
+- done: `.github/workflows/web.yml` 作成。
+  - build: setup-emsdk → WASM ビルド → npm ci → vite build → upload-pages-artifact
+  - deploy: configure-pages → deploy-pages(静的配信)
+  - トリガー: push(main/master) + workflow_dispatch
+- done: YAML 構文検証(js-yaml)。
+- done: `web/CMakeLists.txt` の `cmake_minimum_required` を 3.20 に引き下げ
+  (GitHub Actions の cmake 3.28 でも構成可能に)。
+
+## 補足
+
+- 契約書: `web/API_CONTRACT.md`(C ABI / スナップショットJSON / シリアライズ形式 / リプレイ形式)。
+- 並行開発時のファイル所有権(契約書セクション6): core/・web/CMakeLists.txt=A(基盤)、
+  web/src/**=B(フロントエンド)、.github/workflows/web.yml=C(デプロイ)。
+- 検証コマンド:
+  - パリティ: `g++ -std=c++17 -O2 -I. core/test/core_test.cpp core/coBroc_core.cpp` と
+    `emcc -O2 -std=c++17 -I. ... -o /tmp/x.js; node /tmp/x.js` の diff。
+  - WASM ビルド: `emcmake cmake -B build-emscripten -S web && emmake cmake --build build-emscripten`
+  - フロント: `cd web && npm run build`
+
+## TODO-Web05(レビュー修正)
+
+- コードレビューで見つかった問題を修正した。
+  - done: リプレイ中の状態ポインタ二重解放を修正。`replay.ts` はポインタを
+    生成/解放せず、所有権を `main.ts` 側に一元化(`startReplay` のシグネチャ変更)。
+  - done: リプレイ時に AI の手で盤面が満杯(turn=3)になった場合の自動 `run` が
+    再現されない問題を修正。本体(`runAiIfNeeded`)と同じ挙動に統一。
+  - done: `cobroc_select_input_color` を ABI に追加(PlayerTurn→color_select、
+    実機の Y キー相当)。フロントエンドの Y ボタンは player 中に色選択画面へ遷移、
+    color_select 中に実行。
+  - done: 修正後、E2E テスト(ヘッドレス Chrome)再実行で全12項目パスを確認。
+
+## TODO-Web06(END完了ルール)
+
+- ユーザー指摘: 「ENDブロックを置いても追加ボタンが使用可能なのは元からの仕様か」
+  - 回答: 元仕様ではゲーム終了条件は盤面満杯のみで、END を置いても追加可能だった。
+  - 修正: END で最後のスコープを閉じた時点(`syntax_depth == 0`)でプログラム完成とし、
+    以降の追加を不可にする。
+- 実装:
+  - done: プレイヤーの手で完成 → `SelectInputColor` へ遷移
+    (`cobroc_add_block` / Pico `handlePlayerInput`)。色選択画面では追加ボタン無効。
+  - done: AI の手で完成 → `RunProgram` へ遷移(`performAITurn`)。
+  - done: **AI は「完成させる END」を置かない**仕様を追加(`syntax_depth == 1` のとき
+    END 候補を回避。既存の IF/REPEAT 直後即END抑制を拡張)。プログラムを閉じる最終手は
+    プレイヤーの役目とし、AI による即終了(1手目で終了など)を防止。
+  - done: Web UI の追加ボタン(A)を player ターンのみ有効に変更。
+  - done: `web/API_CONTRACT.md` のターン遷移規約に「プログラム完成時」の記載を追加。
+- 検証:
+  - done: `core_test` に `end-complete` シナリオを追加
+    (P: MOVE → AI: DRAW(完成END回避の確認) → P: END → 完成 → 追加停止)。
+  - done: ネイティブ/WASM パリティ一致を再確認(5シナリオ)。
+    - 新ハッシュ: structured=BE80D8B9, draws=09C024B4, moves=47792542,
+      short-run=1B6EECC7, end-complete=0CE81100
+  - done: E2E テストに「END で完成 → color_select → 追加ボタン無効」の 3 項目を追加し、
+    全 15 項目パス。
+  - done: Pico Debug/Release ビルド成功を確認。
+
+## TODO-Web07(AIのEND設置を全面禁止)
+
+- ユーザー要望: 「そもそも、AIがENDブロックを設置することを禁止にしたい」
+  - 前回(TODO-Web06)の「完成させるENDのみ抑制」をさらに強化し、AI は END を
+    一切候補に含めない方式へ変更。
+- 実装:
+  - done: `buildCandidates` で `BlockType::End` をスキップ(AI の候補から完全除外)。
+  - done: `performAITurn` の END 抑制ブロック(候補に END が無くなったため)を削除。
+    - AI は END を置かないので `syntax_depth` は減らず、AI 起因のゲーム終了は
+      盤面満杯のみ。
+  - done: プレイヤー側の「完成判定」を「END で閉じて depth==0」に厳密化
+    (`cobroc_add_block` / Pico `handlePlayerInput`)。
+    トップレベルでの DRAW などは完成と誤判定しないよう修正。
+  - done: モック(`mock.ts`)の AI も END を候補から除外(`AI_PLAYABLE`)。
+  - done: `web/API_CONTRACT.md` に「AI は END を一切設置しない」を明記。
+- 検証:
+  - done: `core_test` に「AI が END を置いたら [unexpected]」チェックを追加し 0 件を確認。
+  - done: ネイティブ/WASM パリティ一致を再確認(5シナリオ)。
+    - 新ハッシュ: structured=3BF544D8, draws=F43A33F6, moves=E01971F1,
+      short-run=045744D7, end-complete=8A0B3A3C
+  - done: WASM スモークテスト全項目パス。
+  - done: E2E 全 15 項目パス(END 完成テストは AI が開くスコープ分の END を
+    複数回置くフローに更新)。
+  - done: Pico Debug/Release ビルド成功。
+
+## TODO-Web08(E2Eテストの正式配置)
+
+- E2E テストをリポジトリ内に正式配置し、再現手順を整備した。
+  - done: `web/e2e/e2e_test.mjs`(ヘッドレス Chrome + puppeteer-core、
+    `E2E_URL` / `CHROME_PATH` 環境変数対応)。
+  - done: `web/e2e/run_e2e.mjs`(dist/ を静的サーバーで配信するランナー)。
+  - done: `package.json` に `npm run e2e`(ビルド→テスト) / `npm run e2e:serve`
+    / `npm run wasm` を追加。`puppeteer-core` を devDependencies に追加。
+  - done: リポジトリ内ランナーで E2E 全 15 項目パスを再確認。
