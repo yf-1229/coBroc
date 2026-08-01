@@ -27,6 +27,9 @@ include_directories(./external/Infrared)
 add_executable( coBroc
         main.h
         main.cpp
+        core/coBroc_core.h
+        core/coBroc_core.cpp
+        core/model.h
         external/ml/coBroc_regression_model.h
 
 )

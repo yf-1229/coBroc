@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>coBroc - Block Coding Game</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Segoe UI', -apple-system, sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+    }
+    #app { width: 100%; max-width: 520px; padding: 1rem; }
+    h1 { text-align: center; margin: 0.25rem 0; font-size: 1.3rem; color: #14A44D; }
+
+    /* ヘッダー(選択中ブロック・ターン) */
+    #header-bar {
+      display: flex; justify-content: space-between; align-items: center;
+      background: #fff; color: #1F2937; border-radius: 8px;
+      padding: 0.5rem 0.75rem; margin: 0.5rem 0; font-size: 0.8rem;
+      border: 1px solid #C5D1DE;
+    }
+    #header-bar .sel { font-weight: 600; }
+    #header-bar .turn { color: #A95DF5; font-weight: 600; }
+
+    #game-view {
+      width: 100%; aspect-ratio: 1;
+      border-radius: 8px; overflow: hidden;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.4);
+      background: #f0f4f9;
+    }
+    canvas { width: 100%; height: 100%; display: block; }
+
+    #status {
+      text-align: center; font-size: 0.78rem; color: #9aa3b2;
+      min-height: 1.2em; margin: 0.4rem 0;
+    }
+
+    .controls {
+      display: flex; gap: 0.4rem; justify-content: center;
+      margin-top: 0.5rem; flex-wrap: wrap;
+    }
+    button {
+      padding: 0.55rem 0.9rem; border: none; border-radius: 6px;
+      font-size: 0.82rem; font-weight: 600; cursor: pointer;
+      transition: background 0.2s, transform 0.05s;
+    }
+    button:active { transform: scale(0.95); }
+    button:disabled { opacity: 0.35; cursor: default; }
+    .btn-a { background: #14A44D; color: #fff; }
+    .btn-b { background: #2F80ED; color: #fff; }
+    .btn-x { background: #F39C12; color: #fff; }
+    .btn-y { background: #A95DF5; color: #fff; }
+    .btn-util { background: #374151; color: #d1d5db; }
+
+    .loading { text-align: center; padding: 2rem; color: #888; }
+    .hint {
+      text-align: center; margin-top: 0.5rem; font-size: 0.7rem; color: #666;
+    }
+    .hint kbd {
+      background: #2d2d44; color: #cfd6e4; padding: 0.05rem 0.4rem;
+      border-radius: 4px; font-size: 0.68rem;
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <h1>&#x25B3;&#x25A1;&#x25C7; coBroc</h1>
+
+    <div id="header-bar">
+      <span class="sel" id="sel-label">SEL: MOVE P:1/19</span>
+      <span class="turn" id="turn-label">TURN: PLAYER</span>
+    </div>
+
+    <div id="game-view">
+      <canvas id="game-canvas"></canvas>
+    </div>
+
+    <div id="loading-msg" class="loading">Loading WASM module...</div>
+    <div id="status"></div>
+
+    <div class="controls" id="controls" style="display:none">
+      <button class="btn-a" id="btn-a" title="Add Block">A: Add</button>
+      <button class="btn-b" id="btn-b" title="Cycle Type">B: Type</button>
+      <button class="btn-x" id="btn-x" title="Cycle Param / Next Color">X: Param</button>
+      <button class="btn-y" id="btn-y" title="Run / Start">Y: Run</button>
+      <button class="btn-util" id="btn-replay" title="Replay">&#x21BA; Replay</button>
+      <button class="btn-util" id="btn-save" title="Export Save">&#x2B07; Save</button>
+      <button class="btn-util" id="btn-load" title="Import Save">&#x2B06; Load</button>
+      <input type="file" id="file-input" accept="application/json" style="display:none" />
+    </div>
+
+    <div class="hint">
+      Keys: <kbd>A</kbd> add &nbsp;<kbd>B</kbd> type &nbsp;<kbd>X</kbd> param/color
+      &nbsp;<kbd>Y</kbd> run &nbsp;<kbd>N</kbd> new game &nbsp;<kbd>R</kbd> replay &nbsp;<kbd>S</kbd> save
+    </div>
+  </div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
