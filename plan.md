@@ -380,3 +380,17 @@
   - done: `package.json` に `npm run e2e`(ビルド→テスト) / `npm run e2e:serve`
     / `npm run wasm` を追加。`puppeteer-core` を devDependencies に追加。
   - done: リポジトリ内ランナーで E2E 全 15 項目パスを再確認。
+
+## TODO-Web09(GitHub Pages 白画面修正)
+
+- ユーザー報告: Pages 公開時に「Loading WASM module...」のまま白画面。
+- 原因: GitHub Pages はサブパス(例: `/coBroc/`)で配信されるが、Vite の
+  デフォルト `base: '/'` によりビルド後の index.html が絶対パス
+  (`/assets/index-*.js`)を参照し 404 → main.ts が実行されず白画面。
+- 修正:
+  - done: `vite.config.ts` に `base: './'` を設定(全アセットをページ相対に)。
+  - done: `web/e2e/run_e2e.mjs` をサブパス対応(`E2E_BASE_PATH` 環境変数)。
+  - done: `favicon.svg` を追加し 404(favicon.ico)を解消。
+- 検証:
+  - done: サブパス `/coBroc/` を再現し E2E 全 15 項目パス(実 WASM ロード確認)。
+  - done: ルート配信でも E2E 全 15 項目パス。
