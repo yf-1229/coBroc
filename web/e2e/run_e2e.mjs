@@ -16,23 +16,38 @@
 
 import { createServer } from 'http';
 import { readFileSync, existsSync } from 'fs';
-import { join, extname, dirname } from 'path';
+import { join, extname, dirname, resolve, sep } from 'path';
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = 17890;
 const DIST = join(__dirname, '..', 'dist');
-const BASE_PATH = process.env.E2E_BASE_PATH || ''; // 例: '/coBroc'
+const DIST_ROOT = resolve(DIST);
+const normalizeBasePath = (basePath = '') => {
+  const trimmed = basePath.trim();
+  if (!trimmed) return '';
+  const normalized = trimmed.replace(/^\/+|\/+$/g, '');
+  return normalized ? `/${normalized}` : '';
+};
+const BASE_PATH = normalizeBasePath(process.env.E2E_BASE_PATH || ''); // 例: '/coBroc'
 
 const mime = { '.html':'text/html','.js':'text/javascript','.wasm':'application/wasm','.json':'application/json','.svg':'image/svg+xml' };
 
 const server = createServer((req, res) => {
-  let urlPath = req.url.split('?')[0];
-  if (BASE_PATH && urlPath.startsWith(BASE_PATH)) {
-    urlPath = urlPath.slice(BASE_PATH.length);
+  let urlPath = (req.url ?? '/').split('?')[0] || '/';
+  if (!urlPath.startsWith('/')) {
+    urlPath = `/${urlPath}`;
   }
-  let p = join(DIST, urlPath === '/' || urlPath === '' ? '/index.html' : urlPath);
+  if (BASE_PATH && (urlPath === BASE_PATH || urlPath.startsWith(`${BASE_PATH}/`))) {
+    urlPath = urlPath.slice(BASE_PATH.length) || '/';
+  }
+  let p = resolve(DIST_ROOT, `.${urlPath === '/' || urlPath === '' ? '/index.html' : urlPath}`);
+  if (p !== DIST_ROOT && !p.startsWith(`${DIST_ROOT}${sep}`)) {
+    res.writeHead(403);
+    res.end();
+    return;
+  }
   if (!existsSync(p)) { res.writeHead(404); res.end(); return; }
   const ext = extname(p);
   res.writeHead(200, { 'Content-Type': mime[ext] || 'application/octet-stream' });
