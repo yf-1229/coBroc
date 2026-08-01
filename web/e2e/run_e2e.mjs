@@ -39,8 +39,8 @@ const server = createServer((req, res) => {
   if (!urlPath.startsWith('/')) {
     urlPath = `/${urlPath}`;
   }
-  if (BASE_PATH && urlPath.startsWith(BASE_PATH)) {
-    urlPath = urlPath.slice(BASE_PATH.length);
+  if (BASE_PATH && (urlPath === BASE_PATH || urlPath.startsWith(`${BASE_PATH}/`))) {
+    urlPath = urlPath.slice(BASE_PATH.length) || '/';
   }
   let p = resolve(DIST_ROOT, `.${urlPath === '/' || urlPath === '' ? '/index.html' : urlPath}`);
   if (p !== DIST_ROOT && !p.startsWith(`${DIST_ROOT}${sep}`)) {
