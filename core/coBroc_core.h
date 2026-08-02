@@ -14,7 +14,7 @@ namespace coBroc::core {
 
 constexpr uint8_t MAX_MOVES = 16;
 constexpr uint8_t MAX_HISTORY = 32;
-constexpr uint8_t MAX_NEST_DEPTH = 6;
+constexpr uint8_t MAX_NEST_DEPTH = 2;
 constexpr uint8_t LIST_VISIBLE = 9;
 
 constexpr uint16_t LCD_WIDTH = 240;

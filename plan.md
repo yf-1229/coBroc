@@ -451,3 +451,21 @@
   - done: WASM 再ビルド(`build-emscripten`)成功。
   - done: E2E 全項目パス(実 WASM)。
   - done: Pico Debug/Release ビルド成功。
+
+## TODO-Web12(多重ネスト禁止: 最大2段)
+
+- ユーザー要望: 「多重ネストを禁止して」→ スコープの入れ子は最大 **2段** まで。
+- 実装:
+  - done: `core/coBroc_core.h` の `MAX_NEST_DEPTH` を `6` から `2` に変更。
+    - `blockAllowedByDepth` が `syntax_depth >= MAX_NEST_DEPTH` で開きブロック
+      (MOVE/IF/REPEAT)の配置を拒否するため、2段目まで(外側1 + 内側1)で制限される。
+    - ランタイムの `move_step_stack` / `repeat_stack` は配列サイズが
+      `MAX_NEST_DEPTH` のため自動的に2段対応になる。
+- 検証:
+  - done: ネストテストで「Repeat→If→Move は3段目で配置不可」「2段まで配置可」を確認。
+  - done: `core_test` 新ハッシュ(6シナリオ): structured=636D9413, draws=3EA0B0B0,
+    moves=580C6A52, short-run=668C2B63, end-complete=704863ED, undo=47A6AAEC
+    (深いネストを含むシナリオで AI の手が変化。end-complete / undo は2段以内のため不変)。
+  - done: ネイティブ/WASM パリティ一致(diff 空)。
+  - done: WASM 再ビルド成功、E2E 全項目パス(実 WASM)。
+  - done: Pico Debug/Release ビルド成功。
