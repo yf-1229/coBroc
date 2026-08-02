@@ -224,7 +224,9 @@ namespace {
         constexpr lv_coord_t FLOW_NODE_GAP = 12;
         constexpr lv_coord_t FLOW_TOP_PADDING = 8;
         constexpr lv_coord_t FLOW_INDENT_STEP = 8;
-        constexpr lv_coord_t FLOW_MAX_INDENT_DEPTH = 5;
+        // ネスト最大深さ (core: MAX_NEST_DEPTH=2)。view_depths は recalcViewDepths
+        // で MAX_NEST_DEPTH にクランプ済みだが、防御的にここでも上限を適用する。
+        constexpr lv_coord_t FLOW_MAX_INDENT_DEPTH = 2;
 
         lv_color_t lvColorFromRgb565Fast(uint16_t rgb565) {
             const uint8_t r = static_cast<uint8_t>(((rgb565 >> 11) & 0x1F) * 255 / 31);

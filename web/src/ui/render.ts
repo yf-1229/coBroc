@@ -185,7 +185,9 @@ export function renderMain(canvas: HTMLCanvasElement, snap: Snapshot, focus: num
   const shapeSize = 24;
   const centerX = leftX + leftW / 2;
   const INDENT_STEP = 8;
-  const MAX_INDENT_DEPTH = 5;
+  // ネスト最大深さ (core: MAX_NEST_DEPTH=2)。recalcViewDepths が view_depths を
+  // MAX_NEST_DEPTH にクランプ済みだが、防御的にここでも上限を適用する。
+  const MAX_INDENT_DEPTH = 2;
   const maxShapeRight = leftX + leftW - 4 - shapeSize / 2;
   let prevBottom = -1;
   let prevCenterX = centerX;

@@ -257,6 +257,7 @@ bool deserializeState(const char* data, ProgramState& s) {
     if (out.history_size > MAX_HISTORY) return false;
     if (out.selected_block > BlockType::Else) return false;
     if (out.turn > TurnState::Finished) return false;
+    if (out.syntax_depth > MAX_NEST_DEPTH) return false;
 
     r.bytes(out.history.data(), out.history.size() * sizeof(BlockType));
     r.bytes(out.block_frequency.data(), out.block_frequency.size() * sizeof(uint8_t));
@@ -270,9 +271,27 @@ bool deserializeState(const char* data, ProgramState& s) {
         if (type > static_cast<uint8_t>(BlockType::Else)) return false;
         out.program[i] = {static_cast<BlockType>(type), param, from_ai != 0};
     }
+    // 旧セーブで MAX_NEST_DEPTH を超えるネストが含まれないことを検証する
+    // (ランタイムの move/repeat スタックは MAX_NEST_DEPTH サイズのため、
+    //  超過した状態を復元すると実行時に失敗する)。
+    {
+        uint8_t depth = 0;
+        for (uint8_t i = 0; i < out.move_count; i++) {
+            const BlockType t = out.program[i].type;
+            if (t == BlockType::Move || t == BlockType::If || t == BlockType::Repeat) {
+                depth++;
+                if (depth > MAX_NEST_DEPTH) return false;
+            } else if (t == BlockType::End) {
+                if (depth > 0) depth--;
+            }
+        }
+    }
+    // view_depths は現在の MAX_NEST_DEPTH に合わせて再計算する
+    // (旧セーブの値は 3..5 の可能性があるため)
     for (uint8_t i = 0; i < out.move_count; i++) {
         out.view_depths[i] = r.u8();
     }
+    coBroc::core::recalcViewDepths(out);
 
     out.runtime.circle_count = r.u16();
     if (out.runtime.circle_count > MAX_DRAW_EVENTS) return false;

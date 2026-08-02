@@ -461,8 +461,18 @@
       (MOVE/IF/REPEAT)の配置を拒否するため、2段目まで(外側1 + 内側1)で制限される。
     - ランタイムの `move_step_stack` / `repeat_stack` は配列サイズが
       `MAX_NEST_DEPTH` のため自動的に2段対応になる。
+  - done: `core/wasm_api.cpp` の `deserializeState` にネスト深さ検証を追加。
+    旧セーブ(MAX_NEST_DEPTH=6 時代)で深さ 3..5 のプログラムを読み込むと
+    ランタイムスタック(サイズ2)を超えて実行時に失敗するため、復元時に
+    `syntax_depth > MAX_NEST_DEPTH` またはプログラムのネスト深さが
+    `MAX_NEST_DEPTH` を超える場合は `nullptr` を返して拒否する。
+    また `view_depths` を現在の `MAX_NEST_DEPTH` に合わせて再計算。
+  - done: インデント描画の最大深さクランプを `MAX_INDENT_DEPTH=5` から
+    `2` に変更(render.ts / main.cpp)。`recalcViewDepths` が既にクランプ済みだが
+    防御的に `MAX_NEST_DEPTH` と揃えた。
 - 検証:
   - done: ネストテストで「Repeat→If→Move は3段目で配置不可」「2段まで配置可」を確認。
+  - done: 旧セーブ(深さ3)を復元しようとすると `cobroc_deserialize` が null を返すことを確認。
   - done: `core_test` 新ハッシュ(6シナリオ): structured=636D9413, draws=3EA0B0B0,
     moves=580C6A52, short-run=668C2B63, end-complete=704863ED, undo=47A6AAEC
     (深いネストを含むシナリオで AI の手が変化。end-complete / undo は2段以内のため不変)。
