@@ -68,6 +68,13 @@ function refresh(): void {
 
 function autoSaveCurrent(): void {
   if (!core || !ptr) return;
+  // 完了/実行中状態はオートセーブしない(リロード時に TURN: FINISHED で
+  // 始まってしまうのを防ぐ。仕様: ゲーム開始時は player)。
+  const current = snap ?? core.snapshot(ptr);
+  if (current && (current.turn === 'finished' || current.turn === 'run')) {
+    autoSave(null);
+    return;
+  }
   autoSave(buildSaveFile(core, ptr, seed));
 }
 
@@ -290,13 +297,21 @@ async function main(): Promise<void> {
   if (auto) {
     const newPtr = core.deserialize(auto.data);
     if (newPtr) {
-      ptr = newPtr;
-      seed = auto.seed;
-      recorder = new ReplayRecorder(seed);
-      refresh();
-      autoSaveCurrent();
-      updateStatus('Restored autosave.');
-      return;
+      // 完了/実行中状態のセーブは復元せず破棄し、新規ゲームを開始する
+      // (仕様: ゲーム開始時は player。TURN: FINISHED で始まるのを防ぐ)。
+      const restored = core.snapshot(newPtr);
+      if (restored && (restored.turn === 'finished' || restored.turn === 'run')) {
+        core.free(newPtr);
+        autoSave(null);
+      } else {
+        ptr = newPtr;
+        seed = auto.seed;
+        recorder = new ReplayRecorder(seed);
+        refresh();
+        autoSaveCurrent();
+        updateStatus('Restored autosave.');
+        return;
+      }
     }
   }
   startNewGame();
