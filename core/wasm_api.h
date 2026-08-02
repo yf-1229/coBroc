@@ -24,6 +24,8 @@ void cobroc_set_input_color(void* state, int color);
 // mirroring the Pico "Y" key behaviour.
 void cobroc_select_input_color(void* state);
 void cobroc_run(void* state);
+// 最後に置かれたブロック(プレイヤー/AI 問わず)を1つ取り消す
+void cobroc_undo(void* state);
 
 // AI turn
 void cobroc_ai_turn(void* state);

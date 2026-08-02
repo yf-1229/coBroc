@@ -394,3 +394,32 @@
 - 検証:
   - done: サブパス `/coBroc/` を再現し E2E 全 15 項目パス(実 WASM ロード確認)。
   - done: ルート配信でも E2E 全 15 項目パス。
+
+## TODO-Web10(New Game ボタン / 全ブロック巡回表示 / Undo)
+
+- ユーザー要望:
+  - WEB に「New Game」ボタンを追加する。
+  - ゲーム中盤で IF/REPEAT が選択できなくなる問題を修正する
+    (原因: 従来の B 巡回は「今置けるブロックのみ」を表示するため、AI が開いた
+    MOVE スコープ内では IF/REPEAT が巡回から消えていた)。
+  - Undo 機能を WEB と Raspberry Pi の両方に追加する(最後の1ブロックを戻す)。
+  - END ブロックの専用ボタン化は見送り(巡回のまま)、END 後の AI 設置も現状維持。
+- 実装:
+  - done: `web/index.html` に `btn-new`(New)と `btn-undo`(Undo)を追加。キーボードは
+    `Z` を Undo に割当。
+  - done: `core/coBroc_core.cpp` の `cycleBlockType` を全ブロック常時巡回に変更
+    (置けないブロックは選択のみ可能で、追加は既存の `isLegalCandidate` が拒否)。
+  - done: `core/coBroc_core.*` に `undoLastStep()` を追加(履歴/頻度/遷移/深さ/選択を
+    巻き戻し、turn を PlayerTurn へ)。
+  - done: WASM ABI に `cobroc_undo` を追加(`wasm_api.{h,cpp}`, `web/CMakeLists.txt` の
+    EXPORTED_FUNCTIONS に追記)。`API_CONTRACT.md` に記載。
+  - done: WEB 側 `types.ts` / `loader.ts` / `mock.ts` / `main.ts` / `replay.ts` に
+    undo 対応を追加。
+  - done: Pico `main.cpp` で `keyUp`(上キー)を Undo に割当。
+- 検証:
+  - done: `core_test` に undo シナリオを追加し、ネイティブ/WASM パリティ一致を確認
+    (既存5シナリオのハッシュは変更なし、undo=0BDCC621)。
+  - done: ABI テストで `cobroc_undo` の move_count/turn 巻き戻しを確認。
+  - done: E2E に「B 巡回で全ブロック表示」「New Game ボタン」「Undo ボタン」を追加し
+    全項目パス(実 WASM)。
+  - done: Pico Debug/Release ビルド成功。

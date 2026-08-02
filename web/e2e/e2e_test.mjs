@@ -54,6 +54,66 @@ await page.click('#btn-x');
 const selX = await selText();
 check(/P:[2-8]\//.test(selX), `Xでパラメータ増加 (got: ${selX})`);
 
+// 2b. B 巡回で全ブロック(IF/ELSE/REPEAT/END 含む)が表示される
+//     (置ける/置けないに関わらず巡回表示する仕様)
+{
+  const seen = new Set();
+  for (let i = 0; i < 8; i++) {
+    await page.click('#btn-b');
+    await new Promise((r) => setTimeout(r, 120));
+    seen.add((await selText()).split(' ')[1]);
+  }
+  for (const name of ['MOVE', 'DRAW', 'IF', 'ELSE', 'REPEAT', 'END']) {
+    check(seen.has(name), `B巡回に ${name} が表示される`);
+  }
+}
+
+// 2c. New Game ボタン存在 + 動作
+{
+  const hasNew = await page.evaluate(() => !!document.getElementById('btn-new'));
+  check(hasNew, 'New Game ボタン存在');
+  await page.click('#btn-new');
+  await new Promise((r) => setTimeout(r, 600));
+  check((await turnText()).includes('PLAYER'), `New Game で player 開始 (got: ${await turnText()})`);
+  // ブロックが初期化されていること
+  const blocksAfterNew = await page.evaluate(() => {
+    return localStorage.getItem('cobroc_autosave');
+  });
+  check(!!blocksAfterNew, 'New Game 後オートセーブ更新');
+}
+
+// 2d. Undo ボタン: ブロック追加後に1つ戻す
+{
+  const hasUndo = await page.evaluate(() => !!document.getElementById('btn-undo'));
+  check(hasUndo, 'Undo ボタン存在');
+
+  // ブロックがない初期状態では Undo は無効
+  const undoDisabledAtStart = await page.evaluate(() => {
+    return document.getElementById('btn-undo').disabled;
+  });
+  check(undoDisabledAtStart, 'ブロック未配置時 Undo は無効');
+
+  // ブロックを追加(新規ゲームの直後 → player ターン)
+  await page.click('#btn-a');
+  await new Promise((r) => setTimeout(r, 1500)); // AI応答
+  const moveCountText = await page.evaluate(() => {
+    return document.getElementById('turn-label').textContent;
+  });
+  check(moveCountText.includes('PLAYER'), `追加後 player ターン (got: ${moveCountText})`);
+
+  // 追加後は Undo が有効
+  const undoEnabledAfterAdd = await page.evaluate(() => {
+    return !document.getElementById('btn-undo').disabled;
+  });
+  check(undoEnabledAfterAdd, '追加後 Undo は有効');
+
+  // Undo を押す → 最後の1ブロック(AIの手)が消え、player ターンのまま
+  await page.click('#btn-undo');
+  await new Promise((r) => setTimeout(r, 600));
+  const afterUndo = await turnText();
+  check(afterUndo.includes('PLAYER'), `Undo 後 player ターン (got: ${afterUndo})`);
+}
+
 // 3. 数手進める(満杯にしない: 6クリックで12手)
 for (let i = 0; i < 6; i++) {
   await page.click('#btn-a');

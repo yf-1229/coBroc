@@ -57,6 +57,11 @@ int main() {
     CHECK(cobroc_get_move_count(s) == 2, "move_count == 2 after ai");
     CHECK(cobroc_get_turn(s) == 0, "turn == player(0) after ai");
 
+    // 5b. undo -> removes last block (AI's), back to player
+    cobroc_undo(s);
+    CHECK(cobroc_get_move_count(s) == 1, "move_count == 1 after undo");
+    CHECK(cobroc_get_turn(s) == 0, "turn == player(0) after undo");
+
     // 6. serialize -> deserialize round-trip
     const char* bin = cobroc_serialize(s);
     CHECK(bin != nullptr, "serialize not null");

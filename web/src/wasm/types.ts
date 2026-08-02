@@ -44,6 +44,7 @@ export interface CoBrocCore {
   selectInputColor(ptr: number): void; // PlayerTurn -> color_select (Y key)
   aiTurn(ptr: number): void;
   run(ptr: number): void;
+  undo(ptr: number): void;              // 最後の1ブロックを取り消す
 
   getTurn(ptr: number): number;
   getMoveCount(ptr: number): number;
@@ -61,7 +62,8 @@ export type ReplayAction =
   | { op: 'add' }
   | { op: 'select_input_color' }
   | { op: 'set_color'; color: number }
-  | { op: 'run' };
+  | { op: 'run' }
+  | { op: 'undo' };
 
 export interface ReplayRecord {
   seed: number;

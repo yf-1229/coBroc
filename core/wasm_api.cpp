@@ -358,6 +358,11 @@ void cobroc_run(void* state) {
     s.turn = coBroc::core::TurnState::Finished;
 }
 
+void cobroc_undo(void* state) {
+    auto& s = *static_cast<coBroc::core::ProgramState*>(state);
+    coBroc::core::undoLastStep(s);
+}
+
 // ── AI turn ─────────────────────────────────────────────────────────────
 
 void cobroc_ai_turn(void* state) {

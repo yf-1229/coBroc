@@ -57,6 +57,7 @@ export function startReplay(
       case 'select_input_color': core.selectInputColor(ptr); break;
       case 'set_color': core.setInputColor(ptr, action.color); break;
       case 'run': core.run(ptr); break;
+      case 'undo': core.undo(ptr); break;
     }
     // AI ターンは自動で進める(満杯で turn=3(run) になった場合は自動 run)
     let guard = 0;

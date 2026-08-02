@@ -49,7 +49,7 @@ set(EMSCRIPTEN_LINK_FLAGS
     "-sEXPORT_NAME=CoBrocModule"
     "-sALLOW_MEMORY_GROWTH=1"
     "-sINITIAL_MEMORY=16MB"
-    "-sEXPORTED_FUNCTIONS=['_cobroc_new_game','_cobroc_free','_cobroc_cycle_type','_cobroc_cycle_param','_cobroc_add_block','_cobroc_set_input_color','_cobroc_select_input_color','_cobroc_ai_turn','_cobroc_run','_cobroc_get_turn','_cobroc_get_move_count','_cobroc_get_selected_param','_cobroc_snapshot','_cobroc_free_snapshot','_cobroc_serialize','_cobroc_deserialize','_malloc','_free']"
+    "-sEXPORTED_FUNCTIONS=['_cobroc_new_game','_cobroc_free','_cobroc_cycle_type','_cobroc_cycle_param','_cobroc_add_block','_cobroc_set_input_color','_cobroc_select_input_color','_cobroc_ai_turn','_cobroc_run','_cobroc_undo','_cobroc_get_turn','_cobroc_get_move_count','_cobroc_get_selected_param','_cobroc_snapshot','_cobroc_free_snapshot','_cobroc_serialize','_cobroc_deserialize','_malloc','_free']"
     "-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','getValue','setValue','UTF8ToString','stringToUTF8','lengthBytesUTF8']"
     "--no-entry"
 )

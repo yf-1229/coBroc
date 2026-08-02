@@ -231,6 +231,35 @@ int main() {
         1
     );
 
+    // Scenario 6: undo — player places a block, then undoes it; the AI's
+    // response is also undone one step at a time. Exercises undoLastStep's
+    // state rollback (history/frequency/transitions/depth) deterministically.
+    {
+        ProgramState s;
+        initProgramState(s);
+        s.rng_seed = 999;
+
+        std::printf("== undo (seed=999) ==\n");
+        std::printf("  game_id=%u\n", s.game_id);
+
+        // P: MOVE(5) -> AI turn
+        addStepToProgram(s, BlockType::Move, 5, false);
+        std::printf("  P: MOVE(5) count=%u depth=%u\n", s.move_count, s.syntax_depth);
+        performAITurn(s);
+        std::printf("  AI: %s(%u) count=%u\n",
+                    blockName(s.program[s.move_count - 1].type),
+                    s.program[s.move_count - 1].param, s.move_count);
+
+        // Undo 1: removes AI's block, back to player
+        if (undoLastStep(s)) std::printf("  undo1: count=%u depth=%u\n", s.move_count, s.syntax_depth);
+        // Undo 2: removes player's MOVE
+        if (undoLastStep(s)) std::printf("  undo2: count=%u depth=%u\n", s.move_count, s.syntax_depth);
+        // Undo 3: no-op (empty)
+        if (!undoLastStep(s)) std::printf("  undo3: no-op\n");
+
+        std::printf("  hash: %08X\n\n", hashProgramState(s));
+    }
+
     std::printf("core_test: done\n");
     return 0;
 }

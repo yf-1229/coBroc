@@ -243,6 +243,9 @@ void rememberHistory(ProgramState& s, BlockType t);
 void ensureSelectionVisible(ProgramState& s);
 void recalcViewDepths(ProgramState& s);
 bool addStepToProgram(ProgramState& s, BlockType t, uint8_t param, bool from_ai);
+// 最後に置かれたブロック(プレイヤー/AI 問わず)を1つ取り消す。
+// 成功時は turn を PlayerTurn に戻す。
+bool undoLastStep(ProgramState& s);
 
 // Selection
 void normalizeSelectedBlockType(ProgramState& s);

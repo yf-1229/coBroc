@@ -25,6 +25,7 @@ void  cobroc_add_block(void* state);          // 選択中ブロックを追加 
 void  cobroc_set_input_color(void* state, int color);
 void  cobroc_select_input_color(void* state);  // PlayerTurn -> color_select (Y キー相当)
 void  cobroc_run(void* state);                // VM実行 → turn=finished
+void  cobroc_undo(void* state);               // 最後の1ブロックを取り消す → turn=player
 void  cobroc_ai_turn(void* state);            // AIが1手置く
 int   cobroc_get_turn(void* state);           // 0..4 (下記 TurnId)
 int   cobroc_get_move_count(void* state);

@@ -123,6 +123,12 @@ export function createMockCore(): CoBrocCore {
       }
       s.turn = 4;
     },
+    undo(ptr: number): void {
+      const s = ptrOf(ptr);
+      if (s.blocks.length === 0) return;
+      s.blocks.pop();
+      s.turn = 0; // player ターンへ戻す
+    },
     getTurn(ptr: number): number {
       return ptrOf(ptr).turn;
     },

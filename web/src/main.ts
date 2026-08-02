@@ -26,6 +26,8 @@ const buttons: Record<string, HTMLButtonElement> = {
   b: $<HTMLButtonElement>('btn-b'),
   x: $<HTMLButtonElement>('btn-x'),
   y: $<HTMLButtonElement>('btn-y'),
+  undo: $<HTMLButtonElement>('btn-undo'),
+  new: $<HTMLButtonElement>('btn-new'),
 };
 
 let core: CoBrocCore | null = null;
@@ -62,6 +64,11 @@ function refresh(): void {
   buttons.b.disabled = snap.turn !== 'player' || busy;
   buttons.x.disabled = snap.turn !== 'player' && snap.turn !== 'color_select';
   buttons.y.disabled = snap.turn !== 'player' && snap.turn !== 'color_select' || busy;
+  // Undo はブロックが1つ以上あるとき(player ターン中)に有効。AI 応答後は
+  // 最後のブロック(AI の手)を取り消せる。
+  buttons.undo.disabled = snap.turn !== 'player' || snap.move_count === 0 || busy;
+  // New Game は操作中以外は常に有効(結果画面からも開始できる)。
+  buttons.new.disabled = busy;
 
   render(canvas, snap, focusIndex(snap));
 }
@@ -94,11 +101,18 @@ function runAiIfNeeded(): void {
   }
 }
 
-async function doAction(action: 'cycle_type' | 'cycle_param' | 'add' | 'run' | 'next_color' | 'new_game'): Promise<void> {
+async function doAction(action: 'cycle_type' | 'cycle_param' | 'add' | 'run' | 'next_color' | 'undo' | 'new_game'): Promise<void> {
   if (!core || !ptr || busy) return;
   busy = true;
   try {
     switch (action) {
+      case 'undo':
+        if (core.getTurn(ptr) === 0 && core.getMoveCount(ptr) > 0) {
+          core.undo(ptr);
+          recorder?.record({ op: 'undo' });
+          updateStatus('Undo.');
+        }
+        break;
       case 'cycle_type':
         if (core.getTurn(ptr) === 0) {
           core.cycleType(ptr);
@@ -242,6 +256,8 @@ function bindControls(): void {
   buttons.b.addEventListener('click', () => doAction('cycle_type'));
   buttons.x.addEventListener('click', () => doAction(snap?.turn === 'color_select' ? 'next_color' : 'cycle_param'));
   buttons.y.addEventListener('click', () => doAction(snap?.turn === 'color_select' ? 'run' : 'run'));
+  buttons.undo.addEventListener('click', () => doAction('undo'));
+  buttons.new.addEventListener('click', () => doAction('new_game'));
 
   $<HTMLButtonElement>('btn-save').addEventListener('click', () => {
     if (core && ptr) downloadSave(buildSaveFile(core, ptr, seed));
@@ -273,6 +289,7 @@ function bindControls(): void {
       case 'b': doAction('cycle_type'); break;
       case 'x': doAction(snap?.turn === 'color_select' ? 'next_color' : 'cycle_param'); break;
       case 'y': doAction('run'); break;
+      case 'z': doAction('undo'); break;
       case 'n': doAction('new_game'); break;
       case 'r': $<HTMLButtonElement>('btn-replay').click(); break;
       case 's': $<HTMLButtonElement>('btn-save').click(); break;

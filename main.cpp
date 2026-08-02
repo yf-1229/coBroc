@@ -132,6 +132,13 @@ namespace {
     // ── Input handlers ──────────────────────────────────────────────────
 
     bool handlePlayerInput(ProgramState& s) {
+        if (hardware::keyPressed(keyUp)) {
+            // Undo: 最後の1ブロック(プレイヤー/AI 問わず)を取り消す
+            if (undoLastStep(s)) {
+                sleep_ms(140);
+                return true;
+            }
+        }
         if (hardware::keyPressed(keyB)) {
             cycleBlockType(s);
             sleep_ms(140);

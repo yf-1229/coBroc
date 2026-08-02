@@ -177,6 +177,40 @@ bool addStepToProgram(ProgramState& s, BlockType t, uint8_t param, bool from_ai)
     return true;
 }
 
+bool undoLastStep(ProgramState& s) {
+    if (s.move_count == 0) return false;
+
+    const uint8_t last = static_cast<uint8_t>(s.move_count - 1);
+    const ProgramStep removed = s.program[last];
+
+    // 履歴・頻度・遷移カウントの巻き戻し
+    if (s.history_size > 0) {
+        const uint8_t idx = blockIndex(removed.type);
+        if (s.block_frequency[idx] > 0) s.block_frequency[idx]--;
+        const uint8_t new_size = static_cast<uint8_t>(s.history_size - 1);
+        if (new_size > 0) {
+            const uint8_t prev = blockIndex(s.history[(new_size - 1) % MAX_HISTORY]);
+            if (s.transitions[prev][idx] > 0) s.transitions[prev][idx]--;
+        }
+        s.history_size = new_size;
+    }
+
+    // 構文深さの巻き戻し(End は深さを増やす方向)
+    if (removed.type == BlockType::Move || removed.type == BlockType::If || removed.type == BlockType::Repeat) {
+        if (s.syntax_depth > 0) s.syntax_depth--;
+    } else if (removed.type == BlockType::End) {
+        s.syntax_depth = static_cast<uint8_t>(std::min<uint8_t>(MAX_NEST_DEPTH, s.syntax_depth + 1));
+    }
+
+    s.move_count--;
+    s.selected_line = s.move_count > 0 ? static_cast<uint8_t>(s.move_count - 1) : 0;
+    recalcViewDepths(s);
+    ensureSelectionVisible(s);
+    normalizeSelectedBlockType(s);
+    s.turn = TurnState::PlayerTurn;
+    return true;
+}
+
 // ── Selection ───────────────────────────────────────────────────────────
 
 void normalizeSelectedBlockType(ProgramState& s) {
@@ -210,16 +244,10 @@ void cycleParam(ProgramState& s) {
 }
 
 void cycleBlockType(ProgramState& s) {
-    BlockType next = s.selected_block;
-    bool found = false;
-    for (size_t i = 0; i < kPlayableBlocks.size(); i++) {
-        next = nextPlayableBlock(next);
-        const uint8_t cand_param = blockHasParam(next) ? minParamForBlock(next) : 0;
-        if (!isLegalCandidate(s, next, cand_param)) continue;
-        found = true;
-        break;
-    }
-    if (!found) return;
+    // 全ブロックを常に巡回表示する(置けないブロックもスキップしない)。
+    // 置けないブロックを選択して追加しようとした場合は isLegalCandidate が
+    // addStepToProgram 内で拒否する(何も起きない)。
+    const BlockType next = nextPlayableBlock(s.selected_block);
     s.selected_block = next;
     const uint8_t minp = minParamForBlock(next);
     const uint8_t maxp = maxParamForBlock(next);

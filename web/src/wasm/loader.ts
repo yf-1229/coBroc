@@ -20,6 +20,7 @@ interface EmscriptenModule {
   _cobroc_select_input_color(ptr: number): void;
   _cobroc_ai_turn(ptr: number): void;
   _cobroc_run(ptr: number): void;
+  _cobroc_undo(ptr: number): void;
   _cobroc_get_turn(ptr: number): number;
   _cobroc_get_move_count(ptr: number): number;
   _cobroc_get_selected_param(ptr: number): number;
@@ -98,6 +99,9 @@ function wrapWasm(mod: EmscriptenModule): CoBrocCore {
     },
     run(ptr: number): void {
       mod._cobroc_run(ptr);
+    },
+    undo(ptr: number): void {
+      mod._cobroc_undo(ptr);
     },
     getTurn(ptr: number): number {
       return mod._cobroc_get_turn(ptr);
