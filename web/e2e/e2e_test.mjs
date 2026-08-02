@@ -109,11 +109,11 @@ await new Promise((r) => setTimeout(r, 4000));
 const replayStatus = await page.$eval('#status', (el) => el.textContent);
 check(replayStatus.includes('Replay'), `リプレイ開始 (status: ${replayStatus})`);
 
-// 7. セーブ→ロード→状態一致
-const saveBefore = await page.evaluate(() => {
+// 7. リプレイ後は finished のため、オートセーブはクリアされている
+const saveAfterFinish = await page.evaluate(() => {
   return localStorage.getItem('cobroc_autosave');
 });
-check(!!saveBefore, 'localStorage にオートセーブ存在');
+check(saveAfterFinish === null, 'finished 状態のオートセーブが残らない');
 
 // 8. 新規ゲーム
 await page.click('#btn-a');
@@ -121,6 +121,12 @@ await new Promise((r) => setTimeout(r, 500));
 await page.keyboard.press('n');
 await new Promise((r) => setTimeout(r, 500));
 check((await turnText()).includes('PLAYER'), 'Nで新規ゲーム');
+
+// 8b. 進行中(未完了)のゲームはオートセーブされる
+const saveMidGame = await page.evaluate(() => {
+  return localStorage.getItem('cobroc_autosave');
+});
+check(!!saveMidGame, '進行中のオートセーブが存在');
 
 // 9. ENDでプログラム完成 → color_select → 追加ボタン無効化
 await page.click('#btn-a'); // MOVE(1) を置く → AI応答
@@ -155,6 +161,24 @@ const addDisabled = await page.evaluate(() => {
   return btn.disabled;
 });
 check(addDisabled, '完成後 A(追加)ボタンが無効');
+
+// 10. 完了状態はオートセーブせず、リロード後は player で開始(仕様: ゲーム開始時は player)
+const turnBeforeReload = await turnText();
+if (turnBeforeReload.includes('COLOR_SELECT') || turnBeforeReload.includes('INPUT COLOR')) {
+  await page.click('#btn-y'); // 色選択 → 実行
+  await new Promise((r) => setTimeout(r, 800));
+}
+const turnAfterRun = await turnText();
+check(turnAfterRun.includes('FINISHED') || turnAfterRun.includes('DONE'), `実行後 finished (got: ${turnAfterRun})`);
+
+// finished 状態が localStorage に保存されていないこと
+const autosaveAfterFinish = await page.evaluate(() => localStorage.getItem('cobroc_autosave'));
+check(autosaveAfterFinish === null, '完了状態のオートセーブが残らない');
+
+// リロード後も新規ゲーム(PLAYER)で開始
+await page.reload({ waitUntil: 'networkidle0', timeout: 30000 });
+await page.waitForSelector('#controls', { visible: true, timeout: 15000 });
+check((await turnText()).includes('PLAYER'), 'リロード後は新規ゲーム PLAYER');
 
 console.log(failures === 0 ? '== E2E PASSED ==' : `== E2E FAILED (${failures}) ==`);
 await browser.close();
