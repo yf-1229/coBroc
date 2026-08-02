@@ -223,6 +223,8 @@ namespace {
         constexpr lv_coord_t FLOW_NODE_X = static_cast<lv_coord_t>((UI_CARD_WIDTH - FLOW_NODE_WIDTH) / 2);
         constexpr lv_coord_t FLOW_NODE_GAP = 12;
         constexpr lv_coord_t FLOW_TOP_PADDING = 8;
+        constexpr lv_coord_t FLOW_INDENT_STEP = 10;
+        constexpr lv_coord_t FLOW_MAX_INDENT_DEPTH = 5;
 
         lv_color_t lvColorFromRgb565Fast(uint16_t rgb565) {
             const uint8_t r = static_cast<uint8_t>(((rgb565 >> 11) & 0x1F) * 255 / 31);
@@ -284,13 +286,14 @@ namespace {
             lv_obj_set_style_line_rounded(line, true, 0);
         }
 
-        void drawFlowConnector(lv_obj_t* parent, lv_coord_t x, lv_coord_t top, lv_coord_t bottom) {
-            auto* pts = reserveLinePoints(2);
+        void drawFlowConnector(lv_obj_t* parent, lv_coord_t from_x, lv_coord_t to_x, lv_coord_t top, lv_coord_t bottom) {
+            auto* pts = reserveLinePoints(3);
             if (pts == nullptr) return;
-            pts[0] = {x, top};
-            pts[1] = {x, bottom};
+            pts[0] = {from_x, top};
+            pts[1] = {to_x, top};
+            pts[2] = {to_x, bottom};
             auto* line = lv_line_create(parent);
-            lv_line_set_points(line, pts, 2);
+            lv_line_set_points(line, pts, 3);
             styleFlowLine(line, lv_color_hex(0x7A8795), 2);
             lv_obj_clear_flag(line, LV_OBJ_FLAG_SCROLLABLE);
         }
@@ -453,15 +456,22 @@ namespace {
             const uint8_t end = static_cast<uint8_t>(std::min<uint16_t>(total, static_cast<uint16_t>(top + visible)));
             const uint8_t focus = focusFlowIndex(s);
 
+            const lv_coord_t max_center_x = static_cast<lv_coord_t>(left_x + left_w - 4 - shape_size / 2);
             bool has_prev = false;
             lv_coord_t prev_bottom = 0;
+            lv_coord_t prev_center_x = center_x;
             for (uint8_t flow_idx = top; flow_idx < end; flow_idx++) {
                 const uint8_t row = static_cast<uint8_t>(flow_idx - top);
                 const lv_coord_t row_y = static_cast<lv_coord_t>(FLOW_TOP_PADDING + row * (FLOW_NODE_HEIGHT + FLOW_NODE_GAP));
                 const lv_coord_t symbol_y = static_cast<lv_coord_t>(row_y + (FLOW_NODE_HEIGHT - shape_size) / 2);
-                const lv_coord_t symbol_x = static_cast<lv_coord_t>(center_x - shape_size / 2);
+                const lv_coord_t depth = flow_idx == 0
+                    ? 0
+                    : static_cast<lv_coord_t>(std::min<uint8_t>(FLOW_MAX_INDENT_DEPTH, s.view_depths[flow_idx - 1]));
+                const lv_coord_t cur_center_x = std::min<lv_coord_t>(
+                    static_cast<lv_coord_t>(center_x + depth * FLOW_INDENT_STEP), max_center_x);
+                const lv_coord_t symbol_x = static_cast<lv_coord_t>(cur_center_x - shape_size / 2);
 
-                if (has_prev) drawFlowConnector(flow, center_x, prev_bottom, symbol_y);
+                if (has_prev) drawFlowConnector(flow, prev_center_x, cur_center_x, prev_bottom, symbol_y);
 
                 const ProgramStep step = flowStep(s, flow_idx);
                 const lv_color_t accent = flowColor(step, flow_idx);
@@ -505,6 +515,7 @@ namespace {
                 lv_obj_set_pos(info_detail, static_cast<lv_coord_t>(right_x + 4), static_cast<lv_coord_t>(info_y + 18));
 
                 prev_bottom = static_cast<lv_coord_t>(symbol_y + shape_size);
+                prev_center_x = cur_center_x;
                 has_prev = true;
             }
         }

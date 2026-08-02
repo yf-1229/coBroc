@@ -47,9 +47,11 @@ const turnAfterAdd = await turnText();
 check(turnAfterAdd.includes('PLAYER'), `add後 AI応答で PLAYER に復帰 (got: ${turnAfterAdd})`);
 
 // 2. B: タイプ切替、X: パラメータ
+// (MOVE 直後に MOVE は置けないため、A で MOVE を置くと選択が DRAW へ正規化される。
+//  B 1回で DRAW → IF へ切替)
 await page.click('#btn-b');
 const selB = await selText();
-check(selB.includes('DRAW'), `Bでタイプ切替 (got: ${selB})`);
+check(selB.includes('IF'), `Bでタイプ切替 (got: ${selB})`);
 await page.click('#btn-x');
 const selX = await selText();
 check(/P:[2-8]\//.test(selX), `Xでパラメータ増加 (got: ${selX})`);
@@ -192,8 +194,9 @@ check(!!saveMidGame, '進行中のオートセーブが存在');
 await page.click('#btn-a'); // MOVE(1) を置く → AI応答
 await new Promise((r) => setTimeout(r, 1200));
 
-// B を 5 回押して END に切替 (MOVE→DRAW→IF→ELSE→REPEAT→END)
-for (let i = 0; i < 5; i++) {
+// B を 4 回押して END に切替 (DRAW→IF→ELSE→REPEAT→END)
+// (MOVE 直後の選択は MOVE 連続禁止で DRAW へ正規化される)
+for (let i = 0; i < 4; i++) {
   await page.click('#btn-b');
   await new Promise((r) => setTimeout(r, 150));
 }

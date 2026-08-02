@@ -109,7 +109,9 @@ bool isLegalCandidate(const ProgramState& s, BlockType t, uint8_t param) {
     if (!isPlayableBlock(t) || !blockAllowedByDepth(s, t)) return false;
     if (s.move_count > 0) {
         const BlockType last_type = s.program[s.move_count - 1].type;
-        if ((last_type == BlockType::Repeat || last_type == BlockType::If) && t == last_type) return false;
+        if ((last_type == BlockType::Move || last_type == BlockType::Repeat || last_type == BlockType::If) &&
+            t == last_type)
+            return false;
     }
     if (t == BlockType::Else) return param == 0;
     if (t == BlockType::Move && (param < MOVE_PARAM_MIN || param > MOVE_PARAM_MAX)) return false;

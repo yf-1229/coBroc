@@ -184,7 +184,11 @@ export function renderMain(canvas: HTMLCanvasElement, snap: Snapshot, focus: num
 
   const shapeSize = 24;
   const centerX = leftX + leftW / 2;
+  const INDENT_STEP = 10;
+  const MAX_INDENT_DEPTH = 5;
+  const maxShapeRight = leftX + leftW - 4 - shapeSize / 2;
   let prevBottom = -1;
+  let prevCenterX = centerX;
 
   const end = Math.min(total, top + visible);
   for (let idx = top; idx < end; idx++) {
@@ -193,25 +197,31 @@ export function renderMain(canvas: HTMLCanvasElement, snap: Snapshot, focus: num
     const symbolY = y + (ROW_H - shapeSize) / 2;
     const selected = idx === focus;
 
-    // 接続線
+    const item = items[idx];
+    const depth = item.kind === 'run'
+      ? 0
+      : Math.min(item.b.depth, MAX_INDENT_DEPTH);
+    const curCenterX = Math.min(centerX + depth * INDENT_STEP, maxShapeRight);
+
+    // 接続線(L字: 前の行の中心 x → 現在の行の中心 x)
     if (prevBottom >= 0) {
       ctx.strokeStyle = '#7A8795';
       ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.moveTo(centerX, prevBottom);
-      ctx.lineTo(centerX, symbolY);
+      ctx.moveTo(prevCenterX, prevBottom);
+      ctx.lineTo(curCenterX, prevBottom);
+      ctx.lineTo(curCenterX, symbolY);
       ctx.stroke();
     }
 
-    const item = items[idx];
     const color = item.kind === 'run' ? BLOCK_COLORS.Run : BLOCK_COLORS[item.b.type] ?? BLOCK_COLORS.NONE;
 
     // 左: 図形
     if (item.kind === 'run') {
-      drawShape(d, 'circle', centerX, symbolY + shapeSize / 2, shapeSize, color, selected);
-      drawText(d, 'Run', centerX, symbolY + shapeSize / 2, color, 9, true, 'center');
+      drawShape(d, 'circle', curCenterX, symbolY + shapeSize / 2, shapeSize, color, selected);
+      drawText(d, 'Run', curCenterX, symbolY + shapeSize / 2, color, 9, true, 'center');
     } else {
-      drawShape(d, blockShape(item.b.type), centerX, symbolY + shapeSize / 2, shapeSize, color, selected);
+      drawShape(d, blockShape(item.b.type), curCenterX, symbolY + shapeSize / 2, shapeSize, color, selected);
     }
 
     // 右: 情報カード
@@ -234,6 +244,7 @@ export function renderMain(canvas: HTMLCanvasElement, snap: Snapshot, focus: num
     drawText(d, detail, rightX + 6, y + 22, LIGHT.sub, 10);
 
     prevBottom = symbolY + shapeSize;
+    prevCenterX = curCenterX;
   }
 
   // ヘッダー情報(キャンバス上部はDOM側に持たせるため、ここでは空)

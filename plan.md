@@ -340,8 +340,8 @@
   - done: `core_test` に `end-complete` シナリオを追加
     (P: MOVE → AI: DRAW(完成END回避の確認) → P: END → 完成 → 追加停止)。
   - done: ネイティブ/WASM パリティ一致を再確認(5シナリオ)。
-    - 新ハッシュ: structured=BE80D8B9, draws=09C024B4, moves=47792542,
-      short-run=1B6EECC7, end-complete=0CE81100
+    - 新ハッシュ: structured=6E9730E9, draws=F43A33F6, moves=3ABEDEEC,
+      short-run=4DFCACC6, end-complete=704863ED (※TODO-Web11 時点の値に更新)
   - done: E2E テストに「END で完成 → color_select → 追加ボタン無効」の 3 項目を追加し、
     全 15 項目パス。
   - done: Pico Debug/Release ビルド成功を確認。
@@ -364,8 +364,8 @@
 - 検証:
   - done: `core_test` に「AI が END を置いたら [unexpected]」チェックを追加し 0 件を確認。
   - done: ネイティブ/WASM パリティ一致を再確認(5シナリオ)。
-    - 新ハッシュ: structured=3BF544D8, draws=F43A33F6, moves=E01971F1,
-      short-run=045744D7, end-complete=8A0B3A3C
+    - 新ハッシュ: structured=6E9730E9, draws=F43A33F6, moves=3ABEDEEC,
+      short-run=4DFCACC6, end-complete=704863ED (※TODO-Web11 時点の値に更新)
   - done: WASM スモークテスト全項目パス。
   - done: E2E 全 15 項目パス(END 完成テストは AI が開くスコープ分の END を
     複数回置くフローに更新)。
@@ -418,8 +418,36 @@
   - done: Pico `main.cpp` で `keyUp`(上キー)を Undo に割当。
 - 検証:
   - done: `core_test` に undo シナリオを追加し、ネイティブ/WASM パリティ一致を確認
-    (既存5シナリオのハッシュは変更なし、undo=0BDCC621)。
+    (当時: 既存5シナリオのハッシュは変更なし、undo=0BDCC621。
+    ※TODO-Web11 の変更で全ハッシュが更新され、現時点は 6シナリオで
+    structured=6E9730E9 / draws=F43A33F6 / moves=3ABEDEEC / short-run=4DFCACC6 /
+    end-complete=704863ED / undo=47A6AAEC)。
   - done: ABI テストで `cobroc_undo` の move_count/turn 巻き戻しを確認。
   - done: E2E に「B 巡回で全ブロック表示」「New Game ボタン」「Undo ボタン」を追加し
     全項目パス(実 WASM)。
+  - done: Pico Debug/Release ビルド成功。
+
+## TODO-Web11(MOVE連続禁止 / ネストのインデント表示)
+
+- ユーザー要望:
+  - MOVE ブロックの連続設置を禁止する(直後のみ。MOVE → 他ブロック → MOVE は許可)。
+  - フローチャートのネストを深さインデントで表現する(WEB / Pico 両方)。
+- 実装:
+  - done: `core/coBroc_core.cpp` の `isLegalCandidate` の「同一ブロック連続禁止」ルールに
+    `BlockType::Move` を追加し、MOVE 直後の MOVE 配置を不可に。
+    `buildCandidates` も `isLegalCandidate` を使用するためプレイヤー/AI 両方に適用。
+  - done: WEB `web/src/ui/render.ts` の `renderMain` で図形を深さに応じて右インデント
+    (`INDENT_STEP=10px`、最大 5 段、左カラム内にクランプ)。接続線は L字
+    (前の行の中心x → 水平 → 現在の行の中心x → 縦)。
+  - done: Pico `main.cpp` の `ui::drawMain` でも同様に深さインデントを描画
+    (`FLOW_INDENT_STEP=10`、深さは `s.view_depths[flow_idx-1]` を使用)。
+    `drawFlowConnector` を L字コネクタ化(開始/終了の中心xを受け取る)。
+- 検証:
+  - done: `core_test` 新ハッシュ(6シナリオ): structured=6E9730E9, draws=F43A33F6,
+    moves=3ABEDEEC, short-run=4DFCACC6, end-complete=704863ED, undo=47A6AAEC
+    (MOVE 連続禁止により AI の手が変化したため、既存シナリオのハッシュも更新。
+    TODO-Web06/Web07/Web10 の記載値を TODO-Web11 時点の値へ更新)。
+  - done: ネイティブ/WASM パリティ一致(diff 空)。
+  - done: WASM 再ビルド(`build-emscripten`)成功。
+  - done: E2E 全項目パス(実 WASM)。
   - done: Pico Debug/Release ビルド成功。
