@@ -164,7 +164,7 @@ check(addDisabled, '完成後 A(追加)ボタンが無効');
 
 // 10. 完了状態はオートセーブせず、リロード後は player で開始(仕様: ゲーム開始時は player)
 const turnBeforeReload = await turnText();
-if (turnBeforeReload.includes('COLOR_SELECT') || turnBeforeReload.includes('INPUT COLOR')) {
+if (turnBeforeReload.includes('COLOR_SELECT')) {
   await page.click('#btn-y'); // 色選択 → 実行
   await new Promise((r) => setTimeout(r, 800));
 }

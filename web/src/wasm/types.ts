@@ -49,7 +49,7 @@ export interface CoBrocCore {
   getMoveCount(ptr: number): number;
   getSelectedParam(ptr: number): number;
 
-  snapshot(ptr: number): Snapshot;
+  snapshot(ptr: number): Snapshot | null;
   serialize(ptr: number): string;       // base64
   deserialize(data: string): number | null;
 }

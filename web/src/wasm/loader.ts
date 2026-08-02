@@ -108,9 +108,9 @@ function wrapWasm(mod: EmscriptenModule): CoBrocCore {
     getSelectedParam(ptr: number): number {
       return mod._cobroc_get_selected_param(ptr);
     },
-    snapshot(ptr: number): Snapshot {
+    snapshot(ptr: number): Snapshot | null {
       const p = mod._cobroc_snapshot(ptr);
-      if (!p) return { v: 1, game_id: 0, turn: 'finished', move_count: 0, max_moves: 16, syntax_depth: 0, selected_block: 'NONE', selected_param: 0, param_min: 0, param_max: 0, run_input_color: 1, block: [], circles: [] };
+      if (!p) return null;
       const json = mod.UTF8ToString(p);
       mod._cobroc_free_snapshot(p);
       return JSON.parse(json) as Snapshot;

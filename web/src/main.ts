@@ -299,8 +299,9 @@ async function main(): Promise<void> {
     if (newPtr) {
       // 完了/実行中状態のセーブは復元せず破棄し、新規ゲームを開始する
       // (仕様: ゲーム開始時は player。TURN: FINISHED で始まるのを防ぐ)。
+      // snapshot が取得できない場合も復元不能として破棄する。
       const restored = core.snapshot(newPtr);
-      if (restored && (restored.turn === 'finished' || restored.turn === 'run')) {
+      if (!restored || restored.turn === 'finished' || restored.turn === 'run') {
         core.free(newPtr);
         autoSave(null);
       } else {
