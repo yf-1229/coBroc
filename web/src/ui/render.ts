@@ -184,7 +184,7 @@ export function renderMain(canvas: HTMLCanvasElement, snap: Snapshot, focus: num
 
   const shapeSize = 24;
   const centerX = leftX + leftW / 2;
-  const INDENT_STEP = 10;
+  const INDENT_STEP = 8;
   const MAX_INDENT_DEPTH = 5;
   const maxShapeRight = leftX + leftW - 4 - shapeSize / 2;
   let prevBottom = -1;

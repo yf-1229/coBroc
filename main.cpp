@@ -223,7 +223,7 @@ namespace {
         constexpr lv_coord_t FLOW_NODE_X = static_cast<lv_coord_t>((UI_CARD_WIDTH - FLOW_NODE_WIDTH) / 2);
         constexpr lv_coord_t FLOW_NODE_GAP = 12;
         constexpr lv_coord_t FLOW_TOP_PADDING = 8;
-        constexpr lv_coord_t FLOW_INDENT_STEP = 10;
+        constexpr lv_coord_t FLOW_INDENT_STEP = 8;
         constexpr lv_coord_t FLOW_MAX_INDENT_DEPTH = 5;
 
         lv_color_t lvColorFromRgb565Fast(uint16_t rgb565) {
